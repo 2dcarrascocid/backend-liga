@@ -1,0 +1,20 @@
+registerBasic:
+  handler: routes/login/loginBasic.register
+  events:
+    - httpApi:
+        path: /auth/register
+        method: post
+
+loginBasic:
+  handler: routes/login/loginBasic.login
+  events:
+    - httpApi:
+        path: /auth/login
+        method: post
+
+loginGoogle:
+  handler: routes/login/loginGoogle.login
+  events:
+    - httpApi:
+        path: /auth/google
+        method: post

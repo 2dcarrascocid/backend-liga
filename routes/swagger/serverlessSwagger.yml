@@ -1,0 +1,6 @@
+swaggerDocs:
+  handler: routes/swagger/swaggerDocs.handler
+  events:
+    - httpApi:
+        path: /docs
+        method: get

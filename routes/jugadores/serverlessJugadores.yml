@@ -1,0 +1,13 @@
+crearJugador:
+  handler: routes/jugadores/jugadores.crear
+  events:
+    - httpApi:
+        path: /clubes/{clubId}/jugadores
+        method: post
+
+listarJugadores:
+  handler: routes/jugadores/jugadores.listar
+  events:
+    - httpApi:
+        path: /clubes/{clubId}/jugadores
+        method: get

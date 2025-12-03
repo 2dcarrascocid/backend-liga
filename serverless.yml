@@ -1,0 +1,66 @@
+service: backend-sls
+frameworkVersion: '>=4.0.0'
+
+provider:
+  name: aws
+  runtime: nodejs20.x
+  region: us-east-1
+  stage: dev
+  environment:
+    USE_DB_MOCK: ${env:USE_DB_MOCK}
+    API_KEY: ${env:API_KEY}
+    SUPABASE_URL_LIGA: ${env:SUPABASE_URL_LIGA}
+    SUPABASE_SERVICE_ROLE_KEY_LIGA: ${env:SUPABASE_SERVICE_ROLE_KEY_LIGA}
+
+  httpApi:
+    cors:
+      allowedOrigins:
+        - '*'                # todos los orígenes
+      allowedHeaders:
+        - '*' 
+      allowedMethods:
+        - '*'  
+      allowCredentials: false
+      
+functions:
+  - ${file(./routes/login/serverlessLogin.yml)}
+  - ${file(./routes/clubes/serverlessClubes.yml)}
+  - ${file(./routes/jugadores/serverlessJugadores.yml)}
+  - ${file(./routes/finanzas/serverlessFinanzas.yml)}
+
+plugins:
+  - serverless-offline
+  
+
+package:
+  individually: true
+  exclude:
+    - node_modules/**
+    - .serverless/**
+    - .webpack/**
+    - logs/**
+    - tmp/**
+    - data/**
+    - "**/*.map"
+    - "**/*.zip"
+    - "**/*.md"
+    - "**/*.log"
+
+
+
+
+build:
+  esbuild:
+    bundle: true
+    minify: true
+    target: node20
+    platform: node
+    external:
+      - aws-sdk
+    banner:
+      js: "import { createRequire } from 'module'; const require = createRequire(import.meta.url);"
+
+custom:
+  serverless-offline:
+    disableCookieValidation: true
+      

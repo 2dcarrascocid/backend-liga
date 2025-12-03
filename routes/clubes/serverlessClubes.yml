@@ -1,0 +1,13 @@
+crearClub:
+  handler: routes/clubes/clubes.crear
+  events:
+    - httpApi:
+        path: /clubes
+        method: post
+
+listarClubes:
+  handler: routes/clubes/clubes.listar
+  events:
+    - httpApi:
+        path: /clubes
+        method: get
