@@ -1,4 +1,4 @@
-# Backend Serverless - FPLAYCHILE
+# Backend Serverless - FPLAYCHILE- LIGA
 
 Este proyecto es un backend construido con **Node.js 20**, **Serverless Framework 4.x**, y desplegado en **AWS Lambda**. Permite manejar usuarios, login y gestión de partidos de fútbol.
 

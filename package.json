@@ -1,15 +1,12 @@
 {
-  "name": "backend-sls",
+  "name": "backend-liga",
   "version": "1.0.0",
   "main": "handler.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "dev": "serverless offline --stage dev",
     "deploy": "serverless deploy",
-    "remove": "serverless remove",
-    "generate:swagger": "node scripts/generate-swagger.js",
-    "sync:swagger": "node scripts/sync-swagger.js",
-    "deploy:all": "serverless deploy && npm run sync:swagger"
+    "remove": "serverless remove"
   },
   "keywords": [],
   "author": "",
@@ -21,14 +18,11 @@
     "dotenv": "^17.2.3",
     "google-auth-library": "^10.5.0",
     "jsonwebtoken": "^9.0.2",
-    "pg": "^8.16.3",
-    "serverless-http": "^4.0.0",
-    "swagger-jsdoc": "^6.2.8",
-    "swagger-ui-dist": "^5.30.2"
+    "serverless-http": "^4.0.0"
   },
   "description": "",
   "devDependencies": {
-    "aws-sdk": "^2.1378.0",
+    "aws-sdk": "^1.18.0",
     "serverless": "^4",
     "serverless-offline": "^14.4.0"
   }
