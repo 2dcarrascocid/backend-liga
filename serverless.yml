@@ -22,7 +22,7 @@ provider:
       allowCredentials: false
       
 functions:
-  - ${file(./routes/clubes/serverlessAuth.yml)}
+  - ${file(./routes/auth/serverlessLogin.yml)}
 
 plugins:
   - serverless-offline

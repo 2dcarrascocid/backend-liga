@@ -1,0 +1,11 @@
+loginLocal:
+  handler: routes/auth/loginLocal.handler
+
+loginGoogle:
+  handler: routes/auth/loginGoogle.handler
+
+loginFacebook:
+  handler: routes/auth/loginFacebook.handler
+
+bootstrap:
+  handler: routes/auth/bootstrap.handler

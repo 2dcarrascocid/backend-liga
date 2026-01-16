@@ -1,0 +1,27 @@
+loginLocal:
+  handler: ${file(./routes/auth/functionLogin.yml):loginLocal.handler}
+  events:
+    - httpApi:
+        path: /auth/login/local
+        method: post
+
+loginGoogle:
+  handler: ${file(./routes/auth/functionLogin.yml):loginGoogle.handler}
+  events:
+    - httpApi:
+        path: /auth/login/google
+        method: post
+
+loginFacebook:
+  handler: ${file(./routes/auth/functionLogin.yml):loginFacebook.handler}
+  events:
+    - httpApi:
+        path: /auth/login/facebook
+        method: post
+
+bootstrap:
+  handler: ${file(./routes/auth/functionLogin.yml):bootstrap.handler}
+  events:
+    - httpApi:
+        path: /auth/bootstrap
+        method: post
