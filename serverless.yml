@@ -23,10 +23,7 @@ provider:
       allowCredentials: false
       
 functions:
-  - ${file(./routes/login/serverlessLogin.yml)}
-  - ${file(./routes/clubes/serverlessClubes.yml)}
-  - ${file(./routes/jugadores/serverlessJugadores.yml)}
-  - ${file(./routes/finanzas/serverlessFinanzas.yml)}
+  - ${file(./routes/auth/serverlessAuth.yml)}
 
 plugins:
   - serverless-offline
