@@ -1,0 +1,54 @@
+createClub:
+  handler: ${file(./routes/clubs/functionClubs.yml):createClub.handler}
+  events:
+    - httpApi:
+        path: /clubs
+        method: post
+getClubs:
+  handler: ${file(./routes/clubs/functionClubs.yml):getClubs.handler}
+  events:
+    - httpApi:
+        path: /clubs
+        method: get
+getClubById:
+  handler: ${file(./routes/clubs/functionClubs.yml):getClubById.handler}
+  events:
+    - httpApi:
+        path: /clubs/{clubId}
+        method: get
+updateClub:
+  handler: ${file(./routes/clubs/functionClubs.yml):updateClub.handler}
+  events:
+    - httpApi:
+        path: /clubs/{clubId}
+        method: patch
+addClubUser:
+  handler: ${file(./routes/clubs/functionClubs.yml):addClubUser.handler}
+  events:
+    - httpApi:
+        path: /clubs/{clubId}/users
+        method: post
+removeClubUser:
+  handler: ${file(./routes/clubs/functionClubs.yml):removeClubUser.handler}
+  events:
+    - httpApi:
+        path: /clubs/{clubId}/users/{userId}
+        method: delete
+addRoster:
+  handler: ${file(./routes/clubs/functionClubs.yml):addRoster.handler}
+  events:
+    - httpApi:
+        path: /clubs/{clubId}/roster
+        method: post
+getRoster:
+  handler: ${file(./routes/clubs/functionClubs.yml):getRoster.handler}
+  events:
+    - httpApi:
+        path: /clubs/{clubId}/roster
+        method: get
+updateRoster:
+  handler: ${file(./routes/clubs/functionClubs.yml):updateRoster.handler}
+  events:
+    - httpApi:
+        path: /clubs/{clubId}/roster/{rosterId}
+        method: patch

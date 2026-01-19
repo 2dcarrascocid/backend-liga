@@ -1,0 +1,48 @@
+createPlayer:
+  handler: ${file(./routes/players/functionPlayers.yml):createPlayer.handler}
+  events:
+    - httpApi:
+        path: /players
+        method: post
+getPlayers:
+  handler: ${file(./routes/players/functionPlayers.yml):getPlayers.handler}
+  events:
+    - httpApi:
+        path: /players
+        method: get
+getPlayerById:
+  handler: ${file(./routes/players/functionPlayers.yml):getPlayerById.handler}
+  events:
+    - httpApi:
+        path: /players/{playerId}
+        method: get
+updatePlayer:
+  handler: ${file(./routes/players/functionPlayers.yml):updatePlayer.handler}
+  events:
+    - httpApi:
+        path: /players/{playerId}
+        method: patch
+requestLoan:
+  handler: ${file(./routes/players/functionPlayers.yml):requestLoan.handler}
+  events:
+    - httpApi:
+        path: /players/{playerId}/loan
+        method: post
+approveLoan:
+  handler: ${file(./routes/players/functionPlayers.yml):approveLoan.handler}
+  events:
+    - httpApi:
+        path: /loans/{loanId}/approve
+        method: post
+rejectLoan:
+  handler: ${file(./routes/players/functionPlayers.yml):rejectLoan.handler}
+  events:
+    - httpApi:
+        path: /loans/{loanId}/reject
+        method: post
+returnLoan:
+  handler: ${file(./routes/players/functionPlayers.yml):returnLoan.handler}
+  events:
+    - httpApi:
+        path: /loans/{loanId}/return
+        method: post

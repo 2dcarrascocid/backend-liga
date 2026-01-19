@@ -23,6 +23,8 @@ provider:
       
 functions:
   - ${file(./routes/auth/serverlessLogin.yml)}
+  - ${file(./routes/clubs/serverlessClubs.yml)}
+  - ${file(./routes/players/serverlessPlayers.yml)}
 
 plugins:
   - serverless-offline

@@ -1,0 +1,16 @@
+createPlayer:
+  handler: routes/players/players.createPlayer
+getPlayers:
+  handler: routes/players/players.getPlayers
+getPlayerById:
+  handler: routes/players/players.getPlayerById
+updatePlayer:
+  handler: routes/players/players.updatePlayer
+requestLoan:
+  handler: routes/players/loans.requestLoan
+approveLoan:
+  handler: routes/players/loans.approveLoan
+rejectLoan:
+  handler: routes/players/loans.rejectLoan
+returnLoan:
+  handler: routes/players/loans.returnLoan

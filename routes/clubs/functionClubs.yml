@@ -1,0 +1,18 @@
+createClub:
+  handler: routes/clubs/clubs.createClub
+getClubs:
+  handler: routes/clubs/clubs.getClubs
+getClubById:
+  handler: routes/clubs/clubs.getClubById
+updateClub:
+  handler: routes/clubs/clubs.updateClub
+addClubUser:
+  handler: routes/clubs/clubs.addClubUser
+removeClubUser:
+  handler: routes/clubs/clubs.removeClubUser
+addRoster:
+  handler: routes/clubs/roster.addRoster
+getRoster:
+  handler: routes/clubs/roster.getRoster
+updateRoster:
+  handler: routes/clubs/roster.updateRoster

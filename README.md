@@ -28,3 +28,30 @@ backend-sls/
 ├─ package.json
 └─ README.md
 
+---
+
+## Paginación estándar en listados
+
+Todos los endpoints GET que retornan listas soportan paginación basada en tokens.
+
+### Query params
+
+- `limit` (opcional): cantidad de registros por página. Si no se envía, se usa `10`.
+- `next_token` (opcional): token opaco para obtener la siguiente página.
+
+### Formato de respuesta en listados
+
+```json
+{
+  "data": [],
+  "next_token": null,
+  "total_registros": 0,
+  "limit": 10
+}
+```
+
+- `data`: lista paginada.
+- `next_token`: `null` si no hay más páginas; token válido si existe página siguiente.
+- `total_registros`: total de registros que cumplen los filtros, sin paginar.
+- `limit`: límite efectivo utilizado en la consulta.
+
