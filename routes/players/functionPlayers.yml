@@ -1,16 +1,16 @@
-createPlayer:
-  handler: routes/players/players.createPlayer
-getPlayers:
-  handler: routes/players/players.getPlayers
-getPlayerById:
-  handler: routes/players/players.getPlayerById
+createPlayerInClub:
+  handler: routes/players/players.createPlayerInClub
+listPlayersByClub:
+  handler: routes/players/players.listPlayersByClub
+listPlayersByOrg:
+  handler: routes/players/players.listPlayersByOrg
+getPlayer:
+  handler: routes/players/players.getPlayer
 updatePlayer:
   handler: routes/players/players.updatePlayer
-requestLoan:
-  handler: routes/players/loans.requestLoan
-approveLoan:
-  handler: routes/players/loans.approveLoan
-rejectLoan:
-  handler: routes/players/loans.rejectLoan
-returnLoan:
-  handler: routes/players/loans.returnLoan
+updatePlayerStatus:
+  handler: routes/players/players.updatePlayerStatus
+changeClub:
+  handler: routes/players/players.changeClub
+uploadPlayerPhoto:
+  handler: routes/players/players.uploadPlayerPhoto

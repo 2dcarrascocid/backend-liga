@@ -1,48 +1,55 @@
-createPlayer:
-  handler: ${file(./routes/players/functionPlayers.yml):createPlayer.handler}
+createPlayerInClub:
+  handler: ${file(./routes/players/functionPlayers.yml):createPlayerInClub.handler}
   events:
     - httpApi:
-        path: /players
+        path: /clubs/{clubId}/players
         method: post
-getPlayers:
-  handler: ${file(./routes/players/functionPlayers.yml):getPlayers.handler}
+
+listPlayersByClub:
+  handler: ${file(./routes/players/functionPlayers.yml):listPlayersByClub.handler}
   events:
     - httpApi:
-        path: /players
+        path: /clubs/{clubId}/players
         method: get
-getPlayerById:
-  handler: ${file(./routes/players/functionPlayers.yml):getPlayerById.handler}
+
+listPlayersByOrg:
+  handler: ${file(./routes/players/functionPlayers.yml):listPlayersByOrg.handler}
+  events:
+    - httpApi:
+        path: /orgs/{orgId}/players
+        method: get
+
+getPlayer:
+  handler: ${file(./routes/players/functionPlayers.yml):getPlayer.handler}
   events:
     - httpApi:
         path: /players/{playerId}
         method: get
+
 updatePlayer:
   handler: ${file(./routes/players/functionPlayers.yml):updatePlayer.handler}
   events:
     - httpApi:
         path: /players/{playerId}
         method: patch
-requestLoan:
-  handler: ${file(./routes/players/functionPlayers.yml):requestLoan.handler}
+
+updatePlayerStatus:
+  handler: ${file(./routes/players/functionPlayers.yml):updatePlayerStatus.handler}
   events:
     - httpApi:
-        path: /players/{playerId}/loan
+        path: /clubs/{clubId}/players/{playerId}/status
+        method: patch
+
+changeClub:
+  handler: ${file(./routes/players/functionPlayers.yml):changeClub.handler}
+  events:
+    - httpApi:
+        path: /players/{playerId}/change-club
         method: post
-approveLoan:
-  handler: ${file(./routes/players/functionPlayers.yml):approveLoan.handler}
+
+uploadPlayerPhoto:
+  handler: ${file(./routes/players/functionPlayers.yml):uploadPlayerPhoto.handler}
   events:
     - httpApi:
-        path: /loans/{loanId}/approve
-        method: post
-rejectLoan:
-  handler: ${file(./routes/players/functionPlayers.yml):rejectLoan.handler}
-  events:
-    - httpApi:
-        path: /loans/{loanId}/reject
-        method: post
-returnLoan:
-  handler: ${file(./routes/players/functionPlayers.yml):returnLoan.handler}
-  events:
-    - httpApi:
-        path: /loans/{loanId}/return
+        path: /players/{playerId}/photo
         method: post
