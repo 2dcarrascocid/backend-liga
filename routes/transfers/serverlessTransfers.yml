@@ -1,0 +1,30 @@
+listTransfers:
+  handler: ${file(./routes/transfers/functionTransfers.yml):listTransfers.handler}
+  events:
+    - httpApi:
+        path: /clubs/{clubId}/transfers
+        method: get
+createTransfer:
+  handler: ${file(./routes/transfers/functionTransfers.yml):createTransfer.handler}
+  events:
+    - httpApi:
+        path: /clubs/{clubId}/transfers
+        method: post
+acceptTransfer:
+  handler: ${file(./routes/transfers/functionTransfers.yml):acceptTransfer.handler}
+  events:
+    - httpApi:
+        path: /clubs/{clubId}/transfers/{transferId}/accept
+        method: patch
+rejectTransfer:
+  handler: ${file(./routes/transfers/functionTransfers.yml):rejectTransfer.handler}
+  events:
+    - httpApi:
+        path: /clubs/{clubId}/transfers/{transferId}/reject
+        method: patch
+cancelTransfer:
+  handler: ${file(./routes/transfers/functionTransfers.yml):cancelTransfer.handler}
+  events:
+    - httpApi:
+        path: /clubs/{clubId}/transfers/{transferId}
+        method: delete

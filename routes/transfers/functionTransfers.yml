@@ -1,0 +1,10 @@
+listTransfers:
+  handler: routes/transfers/transfers.listTransfers
+createTransfer:
+  handler: routes/transfers/transfers.createTransfer
+acceptTransfer:
+  handler: routes/transfers/transfers.acceptTransfer
+rejectTransfer:
+  handler: routes/transfers/transfers.rejectTransfer
+cancelTransfer:
+  handler: routes/transfers/transfers.cancelTransfer

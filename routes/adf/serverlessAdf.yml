@@ -1,0 +1,6 @@
+adfHealth:
+  handler: routes/adf/health.handler
+  events:
+    - httpApi:
+        path: /adf/health
+        method: GET

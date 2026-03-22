@@ -117,13 +117,17 @@ export const getClubById = async (event) => {
 
     const { data, error } = await supabaseAdmin
       .from('lg_clubs')
-      .select('*')
+      .select('*, active_players_count:lg_club_rosters(count)')
       .eq('id', clubId)
+      .eq('lg_club_rosters.status', 'ACTIVE')
       .single();
 
     if (error) throw error;
 
-    return successResponse({ club: data });
+    // Supabase returns count as [{ count: N }] — flatten it
+    const active_players_count = data.active_players_count?.[0]?.count ?? 0;
+
+    return successResponse({ club: { ...data, active_players_count } });
   } catch (error) {
     console.error('getClubById Error:', error);
     return errorResponse(error.message, error.statusCode || 500, error.code);

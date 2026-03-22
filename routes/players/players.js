@@ -17,7 +17,7 @@ export const createPlayerInClub = async (event) => {
   try {
     await getAuthUser(event);
     const { clubId } = event.pathParameters;
-    const body = validateBody(event.body, ['first_name', 'last_name', 'national_id', 'birth_date']);
+    const body = validateBody(event.body, ['first_name', 'last_name', 'rut']);
 
     // 1. Get Club to verify existence and get org_id
     const { data: club, error: clubError } = await supabaseAdmin
@@ -33,9 +33,10 @@ export const createPlayerInClub = async (event) => {
       .from('lg_players')
       .insert({
         org_id: club.org_id,
+        club_id: clubId,
         first_name: body.first_name,
         last_name: body.last_name,
-        national_id: body.national_id,
+        rut: body.rut,
         birth_date: body.birth_date,
         address: body.address,
         phone: body.phone,
@@ -62,7 +63,8 @@ export const createPlayerInClub = async (event) => {
         club_id: clubId,
         player_id: player.id,
         status: 'ACTIVE',
-        valid_from: new Date().toISOString()
+        valid_from: new Date().toISOString(),
+        ...(body.club_folio !== undefined && { club_folio: body.club_folio }),
       })
       .select()
       .single();
@@ -126,8 +128,7 @@ export const listPlayersByClub = async (event) => {
       query = query.or(`first_name.ilike.%${q}%,last_name.ilike.%${q}%,national_id.ilike.%${q}%`, { foreignTable: 'lg_players' });
     }
 
-    // Ordering: Roster usually by valid_from desc or folio asc
-    query = query.order('created_at', { ascending: false })
+    query = query.order('club_folio', { ascending: true, nullsFirst: false })
                  .range(offset, offset + effectiveLimit - 1);
 
     const { data, error, count } = await query;

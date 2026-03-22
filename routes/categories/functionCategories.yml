@@ -1,0 +1,8 @@
+listCategories:
+  handler: routes/categories/categories.listCategories
+createCategory:
+  handler: routes/categories/categories.createCategory
+updateCategory:
+  handler: routes/categories/categories.updateCategory
+deleteCategory:
+  handler: routes/categories/categories.deleteCategory

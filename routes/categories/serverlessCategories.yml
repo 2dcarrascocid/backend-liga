@@ -1,0 +1,24 @@
+listCategories:
+  handler: ${file(./routes/categories/functionCategories.yml):listCategories.handler}
+  events:
+    - httpApi:
+        path: /clubs/{clubId}/categories
+        method: get
+createCategory:
+  handler: ${file(./routes/categories/functionCategories.yml):createCategory.handler}
+  events:
+    - httpApi:
+        path: /clubs/{clubId}/categories
+        method: post
+updateCategory:
+  handler: ${file(./routes/categories/functionCategories.yml):updateCategory.handler}
+  events:
+    - httpApi:
+        path: /clubs/{clubId}/categories/{categoryId}
+        method: patch
+deleteCategory:
+  handler: ${file(./routes/categories/functionCategories.yml):deleteCategory.handler}
+  events:
+    - httpApi:
+        path: /clubs/{clubId}/categories/{categoryId}
+        method: delete

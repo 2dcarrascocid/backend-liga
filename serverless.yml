@@ -25,6 +25,9 @@ functions:
   - ${file(./routes/auth/serverlessLogin.yml)}
   - ${file(./routes/clubs/serverlessClubs.yml)}
   - ${file(./routes/players/serverlessPlayers.yml)}
+  - ${file(./routes/categories/serverlessCategories.yml)}
+  - ${file(./routes/transfers/serverlessTransfers.yml)}
+  - ${file(./routes/adf/serverlessAdf.yml)}
 
 plugins:
   - serverless-offline

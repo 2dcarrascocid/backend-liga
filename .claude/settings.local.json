@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find /c/Users/Delta/Documents/PROYECTOS/2026/backend-liga -type f \\\\\\(-name *agent* -o -name *skill* -o -name *prompt* -o -name *claude* \\\\\\))"
+    ]
+  }
+}

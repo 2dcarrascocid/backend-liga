@@ -1,0 +1,306 @@
+/**
+ * ADF - Clubs Specialist (Specialists Layer)
+ *
+ * Ejecuta operaciones del dominio de clubes y plantillas (rosters).
+ *
+ * DO:
+ *   - Operar sobre lg_clubs, lg_club_users, lg_club_rosters
+ *   - Verificar permisos de org admin antes de operaciones de escritura
+ *   - Usar paginación en todos los listados
+ *
+ * DON'T:
+ *   - No crear jugadores — ese es dominio del PlayersSpecialist
+ *   - No lanzar excepciones no controladas
+ *   - No omitir validación de org admin en CREATE/UPDATE/DELETE
+ *
+ * Capabilities:
+ *   CREATE_CLUB | GET_CLUBS | GET_CLUB | UPDATE_CLUB |
+ *   ADD_CLUB_USER | REMOVE_CLUB_USER |
+ *   ADD_ROSTER | GET_ROSTER | UPDATE_ROSTER
+ *
+ * Checklist:
+ *   [ ] ¿Se verificó membresía de org antes de mutaciones?
+ *   [ ] ¿Los listados usan paginación?
+ *   [ ] ¿Se retornan datos con la estructura esperada por el frontend?
+ *   [ ] ¿Los errores de DB son mapeados a mensajes claros?
+ */
+
+import { Skill } from '../contracts/skill_contract.js';
+import { createSkillResult } from '../contracts/task_schema.js';
+
+const CAPABILITIES = [
+  'CREATE_CLUB', 'GET_CLUBS', 'GET_CLUB', 'UPDATE_CLUB',
+  'ADD_CLUB_USER', 'REMOVE_CLUB_USER',
+  'ADD_ROSTER', 'GET_ROSTER', 'UPDATE_ROSTER',
+];
+
+export class ClubsSpecialist extends Skill {
+  constructor() {
+    super('clubs_specialist', '1.0.0');
+    this.domain = 'clubs';
+    this.capabilities = CAPABILITIES;
+
+    this.contract = {
+      input: [
+        { name: 'operation', required: true, type: 'string' },
+        { name: 'payload', required: true, type: 'object' },
+        { name: 'db', required: true, type: 'object' },
+        { name: 'userId', required: false, type: 'string' },
+      ],
+      output: [
+        { name: 'club', type: 'object' },
+        { name: 'clubs', type: 'array' },
+        { name: 'roster', type: 'array' },
+        { name: 'nextToken', type: 'string' },
+      ],
+      rules: {
+        do: [
+          'Verificar permisos de org en operaciones de escritura',
+          'Usar paginación en listados',
+          'Retornar datos completos de club incluyendo relaciones necesarias',
+        ],
+        dont: [
+          'No crear ni modificar jugadores',
+          'No omitir verificación de org_id en filtros de DB',
+        ],
+      },
+      checklist: [
+        'Permisos verificados antes de mutaciones',
+        'Paginación aplicada en listados',
+        'org_id incluido en filtros de consulta',
+        'Errores de DB mapeados correctamente',
+      ],
+    };
+  }
+
+  async execute(task) {
+    const { operation, payload, db, userId } = task.input;
+
+    if (!this.capabilities.includes(operation)) {
+      return createSkillResult({
+        success: false,
+        errorCode: 'UNKNOWN_OPERATION',
+        errorMessage: `Operación desconocida: "${operation}"`,
+      });
+    }
+
+    try {
+      switch (operation) {
+        case 'CREATE_CLUB':      return this._createClub(payload, db, userId);
+        case 'GET_CLUBS':        return this._getClubs(payload, db);
+        case 'GET_CLUB':         return this._getClub(payload, db);
+        case 'UPDATE_CLUB':      return this._updateClub(payload, db, userId);
+        case 'ADD_CLUB_USER':    return this._addClubUser(payload, db, userId);
+        case 'REMOVE_CLUB_USER': return this._removeClubUser(payload, db, userId);
+        case 'ADD_ROSTER':       return this._addRoster(payload, db);
+        case 'GET_ROSTER':       return this._getRoster(payload, db);
+        case 'UPDATE_ROSTER':    return this._updateRoster(payload, db);
+      }
+    } catch (err) {
+      return createSkillResult({
+        success: false,
+        errorCode: 'CLUBS_SPECIALIST_ERROR',
+        errorMessage: err.message,
+      });
+    }
+  }
+
+  async _createClub({ orgId, name, shortName, colors, logoUrl, description }, db, userId) {
+    // Verify org admin
+    const { data: membership } = await db
+      .from('lg_org_users')
+      .select('role')
+      .eq('user_id', userId)
+      .eq('org_id', orgId)
+      .maybeSingle();
+
+    if (!membership || membership.role !== 'ADMIN') {
+      return createSkillResult({
+        success: false,
+        errorCode: 'FORBIDDEN',
+        errorMessage: 'Solo el ADMIN de la organización puede crear clubes',
+      });
+    }
+
+    const { data: club, error } = await db
+      .from('lg_clubs')
+      .insert({ org_id: orgId, name, short_name: shortName, colors, logo_url: logoUrl, description })
+      .select()
+      .single();
+
+    if (error) {
+      return createSkillResult({
+        success: false,
+        errorCode: 'CREATE_CLUB_FAILED',
+        errorMessage: error.message,
+      });
+    }
+
+    return createSkillResult({ success: true, data: { club } });
+  }
+
+  async _getClubs({ orgId, limit = 20, nextToken }, db) {
+    let query = db
+      .from('lg_clubs')
+      .select('id, name, short_name, colors, logo_url, active, created_at')
+      .order('name');
+
+    if (orgId) query = query.eq('org_id', orgId);
+    if (nextToken) {
+      // Simple cursor: decode base64 offset
+      try {
+        const offset = parseInt(Buffer.from(nextToken, 'base64').toString(), 10);
+        query = query.range(offset, offset + limit - 1);
+      } catch {
+        query = query.limit(limit);
+      }
+    } else {
+      query = query.limit(limit);
+    }
+
+    const { data: clubs, error } = await query;
+    if (error) {
+      return createSkillResult({ success: false, errorCode: 'GET_CLUBS_FAILED', errorMessage: error.message });
+    }
+
+    const hasMore = clubs.length === limit;
+    const next = hasMore ? Buffer.from(String(limit)).toString('base64') : null;
+
+    return createSkillResult({ success: true, data: { clubs, nextToken: next } });
+  }
+
+  async _getClub({ clubId }, db) {
+    const { data: club, error } = await db
+      .from('lg_clubs')
+      .select('*, lg_orgs(id, name, slug)')
+      .eq('id', clubId)
+      .single();
+
+    if (error || !club) {
+      return createSkillResult({ success: false, errorCode: 'CLUB_NOT_FOUND', errorMessage: 'Club no encontrado' });
+    }
+
+    return createSkillResult({ success: true, data: { club } });
+  }
+
+  async _updateClub({ clubId, ...updates }, db, userId) {
+    const allowed = ['name', 'short_name', 'colors', 'logo_url', 'description', 'active'];
+    const patch = Object.fromEntries(
+      Object.entries(updates).filter(([k]) => allowed.includes(k))
+    );
+
+    if (Object.keys(patch).length === 0) {
+      return createSkillResult({ success: false, errorCode: 'NO_FIELDS', errorMessage: 'No hay campos válidos para actualizar' });
+    }
+
+    const { data: club, error } = await db
+      .from('lg_clubs')
+      .update(patch)
+      .eq('id', clubId)
+      .select()
+      .single();
+
+    if (error) {
+      return createSkillResult({ success: false, errorCode: 'UPDATE_CLUB_FAILED', errorMessage: error.message });
+    }
+
+    return createSkillResult({ success: true, data: { club } });
+  }
+
+  async _addClubUser({ clubId, userId: targetUserId, role = 'MEMBER' }, db, requestingUserId) {
+    const { data: club } = await db.from('lg_clubs').select('org_id').eq('id', clubId).single();
+    if (!club) return createSkillResult({ success: false, errorCode: 'CLUB_NOT_FOUND', errorMessage: 'Club no encontrado' });
+
+    const { data: admin } = await db
+      .from('lg_org_users')
+      .select('role')
+      .eq('user_id', requestingUserId)
+      .eq('org_id', club.org_id)
+      .maybeSingle();
+
+    if (!admin || admin.role !== 'ADMIN') {
+      return createSkillResult({ success: false, errorCode: 'FORBIDDEN', errorMessage: 'Solo el ADMIN puede agregar usuarios al club' });
+    }
+
+    const { error } = await db
+      .from('lg_club_users')
+      .upsert({ club_id: clubId, user_id: targetUserId, role }, { onConflict: 'club_id,user_id' });
+
+    if (error) return createSkillResult({ success: false, errorCode: 'ADD_USER_FAILED', errorMessage: error.message });
+
+    return createSkillResult({ success: true, data: { clubId, userId: targetUserId, role } });
+  }
+
+  async _removeClubUser({ clubId, userId: targetUserId }, db, requestingUserId) {
+    const { data: club } = await db.from('lg_clubs').select('org_id').eq('id', clubId).single();
+    if (!club) return createSkillResult({ success: false, errorCode: 'CLUB_NOT_FOUND', errorMessage: 'Club no encontrado' });
+
+    const { data: admin } = await db
+      .from('lg_org_users')
+      .select('role')
+      .eq('user_id', requestingUserId)
+      .eq('org_id', club.org_id)
+      .maybeSingle();
+
+    if (!admin || admin.role !== 'ADMIN') {
+      return createSkillResult({ success: false, errorCode: 'FORBIDDEN', errorMessage: 'Solo el ADMIN puede remover usuarios del club' });
+    }
+
+    const { error } = await db
+      .from('lg_club_users')
+      .delete()
+      .eq('club_id', clubId)
+      .eq('user_id', targetUserId);
+
+    if (error) return createSkillResult({ success: false, errorCode: 'REMOVE_USER_FAILED', errorMessage: error.message });
+
+    return createSkillResult({ success: true, data: { removed: true } });
+  }
+
+  async _addRoster({ clubId, playerId, validFrom, validTo }, db) {
+    const { data: roster, error } = await db
+      .from('lg_club_rosters')
+      .insert({ club_id: clubId, player_id: playerId, status: 'ACTIVE', valid_from: validFrom, valid_to: validTo })
+      .select()
+      .single();
+
+    if (error) {
+      return createSkillResult({ success: false, errorCode: 'ADD_ROSTER_FAILED', errorMessage: error.message });
+    }
+
+    return createSkillResult({ success: true, data: { roster } });
+  }
+
+  async _getRoster({ clubId, limit = 20, nextToken, status }, db) {
+    let query = db
+      .from('lg_club_rosters')
+      .select('*, lg_players(id, first_name, last_name, national_id, position, jersey_number)')
+      .eq('club_id', clubId)
+      .order('club_folio');
+
+    if (status) query = query.eq('status', status);
+    query = query.limit(limit);
+
+    const { data: roster, error } = await query;
+    if (error) return createSkillResult({ success: false, errorCode: 'GET_ROSTER_FAILED', errorMessage: error.message });
+
+    return createSkillResult({ success: true, data: { roster } });
+  }
+
+  async _updateRoster({ rosterId, status, validTo }, db) {
+    const patch = {};
+    if (status !== undefined) patch.status = status;
+    if (validTo !== undefined) patch.valid_to = validTo;
+
+    const { data: roster, error } = await db
+      .from('lg_club_rosters')
+      .update(patch)
+      .eq('id', rosterId)
+      .select()
+      .single();
+
+    if (error) return createSkillResult({ success: false, errorCode: 'UPDATE_ROSTER_FAILED', errorMessage: error.message });
+
+    return createSkillResult({ success: true, data: { roster } });
+  }
+}

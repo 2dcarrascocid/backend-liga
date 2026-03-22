@@ -1,0 +1,8 @@
+prpeara prompot en mi proyecto de servicios api:
+incliur en todos los servicios de select de listas el sistema de paginacion que a cotinuacion detallo:
+
+Funcionalidad:
+solo traer los 10 primeros registros o una cantidad x,
+y cuando son mas de 10 o del limite retornar un toteken para la siguinte pagina 
+segun las funciones declaradas en : root/utils/paginacion.js
+
