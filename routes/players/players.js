@@ -19,32 +19,84 @@ export const createPlayerInClub = async (event) => {
     const { clubId } = event.pathParameters;
     const body = validateBody(event.body, ['first_name', 'last_name', 'rut']);
 
-    // 1. Get Club to verify existence and get org_id
+    // 1. Get Club (incluye config de folios)
     const { data: club, error: clubError } = await supabaseAdmin
       .from('lg_clubs')
-      .select('id, org_id')
+      .select('id, org_id, folio_start, folio_end, max_players')
       .eq('id', clubId)
       .single();
 
     if (clubError || !club) return errorResponse('Club not found', 404, 'CLUB_NOT_FOUND');
 
-    // 2. Insert Player
+    const folioStart  = club.folio_start  ?? 1;
+    const folioEnd    = club.folio_end    ?? 70;
+    const maxPlayers  = club.max_players  ?? 70;
+
+    // 2. Verificar cupo máximo
+    const { count: activeCount } = await supabaseAdmin
+      .from('lg_club_rosters')
+      .select('id', { count: 'exact', head: true })
+      .eq('club_id', clubId)
+      .eq('status', 'ACTIVE');
+
+    if (activeCount >= maxPlayers) {
+      return errorResponse(`Club roster is full (max ${maxPlayers} active players)`, 400, 'ROSTER_FULL');
+    }
+
+    // 3. Determinar folio a asignar
+    let assignedFolio = body.club_folio !== undefined ? parseInt(body.club_folio, 10) : null;
+
+    if (assignedFolio === null) {
+      // Auto-asignar: buscar folios ya usados en el club (ACTIVE e INACTIVE para no reutilizar)
+      const { data: usedFolios } = await supabaseAdmin
+        .from('lg_club_rosters')
+        .select('club_folio')
+        .eq('club_id', clubId)
+        .not('club_folio', 'is', null);
+
+      const used = new Set((usedFolios ?? []).map(r => r.club_folio));
+
+      for (let f = folioStart; f <= folioEnd; f++) {
+        if (!used.has(f)) { assignedFolio = f; break; }
+      }
+
+      if (assignedFolio === null) {
+        return errorResponse('No hay folios disponibles en el rango configurado', 400, 'NO_FOLIO_AVAILABLE');
+      }
+    } else {
+      // Validar rango y unicidad del folio manual
+      if (assignedFolio < folioStart || assignedFolio > folioEnd) {
+        return errorResponse(`El folio debe estar entre ${folioStart} y ${folioEnd}`, 400, 'FOLIO_OUT_OF_RANGE');
+      }
+      const { data: folioInUse } = await supabaseAdmin
+        .from('lg_club_rosters')
+        .select('id')
+        .eq('club_id', clubId)
+        .eq('club_folio', assignedFolio)
+        .maybeSingle();
+
+      if (folioInUse) {
+        return errorResponse(`El folio ${assignedFolio} ya está en uso en este club`, 409, 'FOLIO_IN_USE');
+      }
+    }
+
+    // 4. Insert Player
     const { data: player, error: playerError } = await supabaseAdmin
       .from('lg_players')
       .insert({
-        org_id: club.org_id,
-        club_id: clubId,
-        first_name: body.first_name,
-        last_name: body.last_name,
-        rut: body.rut,
-        birth_date: body.birth_date,
-        address: body.address,
-        phone: body.phone,
-        email: body.email,
-        photo_url: body.photo_url,
+        org_id:        club.org_id,
+        club_id:       clubId,
+        first_name:    body.first_name,
+        last_name:     body.last_name,
+        rut:           body.rut,
+        birth_date:    body.birth_date,
+        address:       body.address,
+        phone:         body.phone,
+        email:         body.email,
+        photo_url:     body.photo_url,
         jersey_number: body.jersey_number,
-        position: body.position,
-        category_id: body.category_id
+        position:      body.position,
+        category_id:   body.category_id
       })
       .select()
       .single();
@@ -56,27 +108,21 @@ export const createPlayerInClub = async (event) => {
       throw playerError;
     }
 
-    // 3. Insert Roster (ACTIVE)
+    // 5. Insert Roster (ACTIVE) con folio asignado
     const { data: roster, error: rosterError } = await supabaseAdmin
       .from('lg_club_rosters')
       .insert({
-        club_id: clubId,
-        player_id: player.id,
-        status: 'ACTIVE',
+        club_id:    clubId,
+        player_id:  player.id,
+        status:     'ACTIVE',
         valid_from: new Date().toISOString(),
-        ...(body.club_folio !== undefined && { club_folio: body.club_folio }),
+        club_folio: assignedFolio,
       })
       .select()
       .single();
 
     if (rosterError) {
-      // Rollback player creation
       await supabaseAdmin.from('lg_players').delete().eq('id', player.id);
-      
-      // Check for trigger errors (e.g., max 70)
-      if (rosterError.message && (rosterError.message.includes('70') || rosterError.message.includes('limit'))) {
-         return errorResponse('Club roster is full (max 70 active players)', 400, 'ROSTER_FULL');
-      }
       throw rosterError;
     }
 

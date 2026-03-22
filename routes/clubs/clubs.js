@@ -40,16 +40,46 @@ export const createClub = async (event) => {
       return errorResponse('Forbidden: You are not an admin of this organization', 403, 'FORBIDDEN');
     }
 
+    const maxPlayers = parseInt(body.max_players, 10) || 70;
+    const folioStart = parseInt(body.folio_start, 10);
+    const folioEnd   = parseInt(body.folio_end,   10);
+
+    if (isNaN(folioStart) || isNaN(folioEnd)) {
+      return errorResponse('folio_start y folio_end son requeridos', 400, 'MISSING_FOLIO');
+    }
+    if (folioEnd <= folioStart) {
+      return errorResponse('folio_end debe ser mayor que folio_start', 400, 'INVALID_FOLIO_RANGE');
+    }
+
+    // Verificar que el rango no se superponga con otro club de la misma org
+    const { data: overlap } = await supabaseAdmin
+      .from('lg_clubs')
+      .select('id, name, folio_start, folio_end')
+      .eq('org_id', body.org_id)
+      .or(`folio_start.lte.${folioEnd},folio_end.gte.${folioStart}`)
+      .not('folio_start', 'is', null)
+      .maybeSingle();
+
+    if (overlap) {
+      return errorResponse(
+        `El rango ${folioStart}–${folioEnd} se superpone con el club "${overlap.name}" (${overlap.folio_start}–${overlap.folio_end})`,
+        409, 'FOLIO_RANGE_OVERLAP'
+      );
+    }
+
     const { data, error } = await supabaseAdmin
       .from('lg_clubs')
       .insert({
-        org_id: body.org_id,
-        name: body.name,
-        short_name: body.short_name,
-        colors: body.colors,
-        logo_url: body.logo_url,
-        description: body.description,
-        active: body.active !== undefined ? body.active : true
+        org_id:       body.org_id,
+        name:         body.name,
+        short_name:   body.short_name,
+        colors:       body.colors,
+        logo_url:     body.logo_url,
+        description:  body.description,
+        active:       body.active !== undefined ? body.active : true,
+        folio_start:  folioStart,
+        folio_end:    folioEnd,
+        max_players:  maxPlayers,
       })
       .select()
       .single();
@@ -115,19 +145,17 @@ export const getClubById = async (event) => {
     const user = await getAuthUser(event);
     const { clubId } = event.pathParameters;
 
-    const { data, error } = await supabaseAdmin
-      .from('lg_clubs')
-      .select('*, active_players_count:lg_club_rosters(count)')
-      .eq('id', clubId)
-      .eq('lg_club_rosters.status', 'ACTIVE')
-      .single();
+    const [{ data, error }, { count }] = await Promise.all([
+      supabaseAdmin.from('lg_clubs').select('*').eq('id', clubId).single(),
+      supabaseAdmin.from('lg_club_rosters')
+        .select('id', { count: 'exact', head: true })
+        .eq('club_id', clubId)
+        .eq('status', 'ACTIVE'),
+    ]);
 
     if (error) throw error;
 
-    // Supabase returns count as [{ count: N }] — flatten it
-    const active_players_count = data.active_players_count?.[0]?.count ?? 0;
-
-    return successResponse({ club: { ...data, active_players_count } });
+    return successResponse({ club: { ...data, active_players_count: count ?? 0 } });
   } catch (error) {
     console.error('getClubById Error:', error);
     return errorResponse(error.message, error.statusCode || 500, error.code);

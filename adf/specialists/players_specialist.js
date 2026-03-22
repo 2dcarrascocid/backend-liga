@@ -6,21 +6,29 @@
  *
  * DO:
  *   - Operar sobre lg_players y lg_club_rosters
- *   - En CREATE_PLAYER: crear jugador Y roster activo en una operación atómica
+ *   - En CREATE_PLAYER: verificar cupo, auto-asignar folio del rango del club, crear jugador y roster
  *   - En CHANGE_CLUB: desactivar roster actual y activar en nuevo club
  *   - Incluir roster activo en respuestas de detalle de jugador
  *
  * DON'T:
- *   - No manejar préstamos/transfers — usar LoansSpecialist
+ *   - No manejar traspasos — usar TransfersSpecialist
  *   - No modificar la tabla de auth.users
  *   - No lanzar excepciones no controladas
+ *
+ * Reglas de folio:
+ *   - El club define folio_start, folio_end, max_players en lg_clubs
+ *   - Al crear jugador: buscar primer folio libre en [folio_start, folio_end] no usado en ningún roster del club
+ *   - Si se provee club_folio manual: validar que esté en rango y no esté en uso
+ *   - Errores: ROSTER_FULL | NO_FOLIO_AVAILABLE | FOLIO_OUT_OF_RANGE | FOLIO_IN_USE
  *
  * Capabilities:
  *   CREATE_PLAYER | GET_PLAYER | LIST_PLAYERS_BY_CLUB | LIST_PLAYERS_BY_ORG |
  *   UPDATE_PLAYER | UPDATE_STATUS | CHANGE_CLUB
  *
  * Checklist:
- *   [ ] ¿CREATE crea jugador Y roster en una sola operación?
+ *   [ ] ¿CREATE verifica cupo antes de insertar?
+ *   [ ] ¿CREATE auto-asigna folio o valida el folio manual?
+ *   [ ] ¿CREATE crea jugador Y roster en secuencia con rollback?
  *   [ ] ¿CHANGE_CLUB desactiva el roster anterior?
  *   [ ] ¿Los listados incluyen paginación?
  *   [ ] ¿Se retorna el roster activo en GET_PLAYER?
@@ -108,25 +116,93 @@ export class PlayersSpecialist extends Skill {
   async _createPlayer(payload, db) {
     const {
       orgId, clubId,
-      firstName, lastName, nationalId, birthDate,
-      address, phone, email, jerseyNumber, position, categoryId,
+      firstName, lastName, rut, birthDate,
+      address, phone, email, photoUrl, jerseyNumber, position, categoryId,
+      clubFolio,
     } = payload;
 
-    // Step 1: Insert player
+    // 1. Obtener config de folios del club
+    const { data: club, error: clubErr } = await db
+      .from('lg_clubs')
+      .select('id, org_id, folio_start, folio_end, max_players')
+      .eq('id', clubId)
+      .single();
+
+    if (clubErr || !club) {
+      return createSkillResult({ success: false, errorCode: 'CLUB_NOT_FOUND', errorMessage: 'Club no encontrado' });
+    }
+
+    const folioStart = club.folio_start ?? 1;
+    const folioEnd   = club.folio_end   ?? 70;
+    const maxPlayers = club.max_players ?? 70;
+
+    // 2. Verificar cupo máximo
+    const { count: activeCount } = await db
+      .from('lg_club_rosters')
+      .select('id', { count: 'exact', head: true })
+      .eq('club_id', clubId)
+      .eq('status', 'ACTIVE');
+
+    if (activeCount >= maxPlayers) {
+      return createSkillResult({
+        success: false,
+        errorCode: 'ROSTER_FULL',
+        errorMessage: `El club alcanzó el máximo de ${maxPlayers} jugadores activos`,
+      });
+    }
+
+    // 3. Determinar folio a asignar
+    let assignedFolio = clubFolio !== undefined ? parseInt(clubFolio, 10) : null;
+
+    if (assignedFolio === null) {
+      // Auto-asignar: primer folio libre en el rango (no reutilizar folios aunque el jugador sea inactivo)
+      const { data: usedFolios } = await db
+        .from('lg_club_rosters')
+        .select('club_folio')
+        .eq('club_id', clubId)
+        .not('club_folio', 'is', null);
+
+      const used = new Set((usedFolios ?? []).map(r => r.club_folio));
+      for (let f = folioStart; f <= folioEnd; f++) {
+        if (!used.has(f)) { assignedFolio = f; break; }
+      }
+
+      if (assignedFolio === null) {
+        return createSkillResult({ success: false, errorCode: 'NO_FOLIO_AVAILABLE', errorMessage: 'No hay folios disponibles en el rango configurado' });
+      }
+    } else {
+      if (assignedFolio < folioStart || assignedFolio > folioEnd) {
+        return createSkillResult({ success: false, errorCode: 'FOLIO_OUT_OF_RANGE', errorMessage: `El folio debe estar entre ${folioStart} y ${folioEnd}` });
+      }
+      const { data: inUse } = await db
+        .from('lg_club_rosters')
+        .select('id')
+        .eq('club_id', clubId)
+        .eq('club_folio', assignedFolio)
+        .maybeSingle();
+
+      if (inUse) {
+        return createSkillResult({ success: false, errorCode: 'FOLIO_IN_USE', errorMessage: `El folio ${assignedFolio} ya está en uso en este club` });
+      }
+    }
+
+    // 4. Insertar jugador
     const { data: player, error: playerErr } = await db
       .from('lg_players')
       .insert({
-        org_id: orgId,
-        first_name: firstName,
-        last_name: lastName,
-        national_id: nationalId,
-        birth_date: birthDate,
+        org_id:        orgId ?? club.org_id,
+        club_id:       clubId,
+        first_name:    firstName,
+        last_name:     lastName,
+        rut,
+        birth_date:    birthDate,
         address,
         phone,
         email,
+        photo_url:     photoUrl,
         jersey_number: jerseyNumber,
         position,
-        category_id: categoryId,
+        category_id:   categoryId,
       })
       .select()
       .single();
@@ -135,26 +211,27 @@ export class PlayersSpecialist extends Skill {
       const isDuplicate = playerErr.code === '23505';
       return createSkillResult({
         success: false,
-        errorCode: isDuplicate ? 'DUPLICATE_NATIONAL_ID' : 'CREATE_PLAYER_FAILED',
-        errorMessage: isDuplicate ? `Ya existe un jugador con national_id "${nationalId}"` : playerErr.message,
+        errorCode: isDuplicate ? 'DUPLICATE_RUT' : 'CREATE_PLAYER_FAILED',
+        errorMessage: isDuplicate ? `Ya existe un jugador con rut "${rut}"` : playerErr.message,
       });
     }
 
-    // Step 2: Create active roster entry
+    // 5. Insertar roster activo con folio asignado
     const { data: roster, error: rosterErr } = await db
       .from('lg_club_rosters')
-      .insert({ club_id: clubId, player_id: player.id, status: 'ACTIVE' })
+      .insert({
+        club_id:    clubId,
+        player_id:  player.id,
+        status:     'ACTIVE',
+        valid_from: new Date().toISOString(),
+        club_folio: assignedFolio,
+      })
       .select()
       .single();
 
     if (rosterErr) {
-      // Rollback player creation
       await db.from('lg_players').delete().eq('id', player.id);
-      return createSkillResult({
-        success: false,
-        errorCode: 'CREATE_ROSTER_FAILED',
-        errorMessage: rosterErr.message,
-      });
+      return createSkillResult({ success: false, errorCode: 'CREATE_ROSTER_FAILED', errorMessage: rosterErr.message });
     }
 
     return createSkillResult({ success: true, data: { player, roster } });

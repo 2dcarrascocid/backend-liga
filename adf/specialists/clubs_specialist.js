@@ -18,10 +18,18 @@
  *   ADD_CLUB_USER | REMOVE_CLUB_USER |
  *   ADD_ROSTER | GET_ROSTER | UPDATE_ROSTER
  *
+ * Reglas de nómina (folio):
+ *   - Cada club tiene folio_start, folio_end, max_players
+ *   - Los folios son únicos por organización — no pueden solaparse entre clubes
+ *   - folio_start y folio_end son ingresados por el admin al CREAR el club
+ *   - El backend valida que el rango no se superponga con otros clubes de la org
+ *   - active_players_count se obtiene con query separada (no alias PostgREST)
+ *
  * Checklist:
  *   [ ] ¿Se verificó membresía de org antes de mutaciones?
  *   [ ] ¿Los listados usan paginación?
- *   [ ] ¿Se retornan datos con la estructura esperada por el frontend?
+ *   [ ] ¿Se validó solapamiento de folios en CREATE_CLUB?
+ *   [ ] ¿active_players_count viene de query separada?
  *   [ ] ¿Los errores de DB son mapeados a mensajes claros?
  */
 
@@ -105,8 +113,8 @@ export class ClubsSpecialist extends Skill {
     }
   }
 
-  async _createClub({ orgId, name, shortName, colors, logoUrl, description }, db, userId) {
-    // Verify org admin
+  async _createClub({ orgId, name, shortName, colors, logoUrl, description, folioStart, folioEnd, maxPlayers = 70 }, db, userId) {
+    // Verificar org admin
     const { data: membership } = await db
       .from('lg_org_users')
       .select('role')
@@ -122,18 +130,48 @@ export class ClubsSpecialist extends Skill {
       });
     }
 
+    if (!folioStart || !folioEnd) {
+      return createSkillResult({ success: false, errorCode: 'MISSING_FOLIO', errorMessage: 'folio_start y folio_end son requeridos' });
+    }
+    if (folioEnd <= folioStart) {
+      return createSkillResult({ success: false, errorCode: 'INVALID_FOLIO_RANGE', errorMessage: 'folio_end debe ser mayor que folio_start' });
+    }
+
+    // Verificar solapamiento de rango con otros clubes de la org
+    const { data: overlap } = await db
+      .from('lg_clubs')
+      .select('id, name, folio_start, folio_end')
+      .eq('org_id', orgId)
+      .or(`folio_start.lte.${folioEnd},folio_end.gte.${folioStart}`)
+      .not('folio_start', 'is', null)
+      .maybeSingle();
+
+    if (overlap) {
+      return createSkillResult({
+        success: false,
+        errorCode: 'FOLIO_RANGE_OVERLAP',
+        errorMessage: `El rango ${folioStart}–${folioEnd} se superpone con el club "${overlap.name}" (${overlap.folio_start}–${overlap.folio_end})`,
+      });
+    }
+
     const { data: club, error } = await db
       .from('lg_clubs')
-      .insert({ org_id: orgId, name, short_name: shortName, colors, logo_url: logoUrl, description })
+      .insert({
+        org_id:      orgId,
+        name,
+        short_name:  shortName,
+        colors,
+        logo_url:    logoUrl,
+        description,
+        folio_start: folioStart,
+        folio_end:   folioEnd,
+        max_players: maxPlayers,
+      })
       .select()
       .single();
 
     if (error) {
-      return createSkillResult({
-        success: false,
-        errorCode: 'CREATE_CLUB_FAILED',
-        errorMessage: error.message,
-      });
+      return createSkillResult({ success: false, errorCode: 'CREATE_CLUB_FAILED', errorMessage: error.message });
     }
 
     return createSkillResult({ success: true, data: { club } });
@@ -170,21 +208,24 @@ export class ClubsSpecialist extends Skill {
   }
 
   async _getClub({ clubId }, db) {
-    const { data: club, error } = await db
-      .from('lg_clubs')
-      .select('*, lg_orgs(id, name, slug)')
-      .eq('id', clubId)
-      .single();
+    const [{ data: club, error }, { count }] = await Promise.all([
+      db.from('lg_clubs').select('*').eq('id', clubId).single(),
+      db.from('lg_club_rosters')
+        .select('id', { count: 'exact', head: true })
+        .eq('club_id', clubId)
+        .eq('status', 'ACTIVE'),
+    ]);
 
     if (error || !club) {
       return createSkillResult({ success: false, errorCode: 'CLUB_NOT_FOUND', errorMessage: 'Club no encontrado' });
     }
 
-    return createSkillResult({ success: true, data: { club } });
+    return createSkillResult({ success: true, data: { club: { ...club, active_players_count: count ?? 0 } } });
   }
 
   async _updateClub({ clubId, ...updates }, db, userId) {
-    const allowed = ['name', 'short_name', 'colors', 'logo_url', 'description', 'active'];
+    const allowed = ['name', 'short_name', 'colors', 'logo_url', 'description', 'active',
+                     'folio_start', 'folio_end', 'max_players'];
     const patch = Object.fromEntries(
       Object.entries(updates).filter(([k]) => allowed.includes(k))
     );
