@@ -132,7 +132,7 @@ export const acceptTransfer = async (event) => {
       return errorResponse('Traspaso no encontrado o no está pendiente', 404, 'TRANSFER_NOT_FOUND');
     }
 
-    // 1. Desactivar el roster activo en el club origen
+    // 1. Desactivar el roster activo en el club origen (libera el folio)
     const { error: deactivateError } = await supabaseAdmin
       .from('lg_club_rosters')
       .update({ status: 'INACTIVE', valid_to: new Date().toISOString() })
@@ -142,7 +142,49 @@ export const acceptTransfer = async (event) => {
 
     if (deactivateError) throw deactivateError;
 
-    // 2. Crear roster activo en el club destino
+    // 2. Obtener config del club destino para asignar folio
+    const { data: toClub, error: toClubError } = await supabaseAdmin
+      .from('lg_clubs')
+      .select('folio_start, folio_end, max_players')
+      .eq('id', transfer.to_club_id)
+      .single();
+
+    if (toClubError || !toClub) throw new Error('Club destino no encontrado');
+
+    const folioStart = toClub.folio_start ?? 1;
+    const folioEnd   = toClub.folio_end   ?? 70;
+    const maxPlayers = toClub.max_players ?? 70;
+
+    // Verificar cupo en club destino
+    const { count: activeCount } = await supabaseAdmin
+      .from('lg_club_rosters')
+      .select('id', { count: 'exact', head: true })
+      .eq('club_id', transfer.to_club_id)
+      .eq('status', 'ACTIVE');
+
+    if (activeCount >= maxPlayers) {
+      throw new Error(`El club destino está lleno (máx. ${maxPlayers} jugadores activos)`);
+    }
+
+    // Buscar primer folio libre en el club destino (solo ACTIVE cuentan como ocupados)
+    const { data: usedFolios } = await supabaseAdmin
+      .from('lg_club_rosters')
+      .select('club_folio')
+      .eq('club_id', transfer.to_club_id)
+      .eq('status', 'ACTIVE')
+      .not('club_folio', 'is', null);
+
+    const used = new Set((usedFolios ?? []).map(r => r.club_folio));
+    let assignedFolio = null;
+    for (let f = folioStart; f <= folioEnd; f++) {
+      if (!used.has(f)) { assignedFolio = f; break; }
+    }
+
+    if (assignedFolio === null) {
+      throw new Error('No hay folios disponibles en el club destino');
+    }
+
+    // 3. Crear roster activo en el club destino con folio asignado
     const { error: rosterError } = await supabaseAdmin
       .from('lg_club_rosters')
       .insert({
@@ -150,11 +192,18 @@ export const acceptTransfer = async (event) => {
         player_id:  transfer.player_id,
         status:     'ACTIVE',
         valid_from: new Date().toISOString(),
+        club_folio: assignedFolio,
       });
 
     if (rosterError) throw rosterError;
 
-    // 3. Marcar traspaso como ACEPTADO
+    // 4. Actualizar club_folio en lg_players
+    await supabaseAdmin
+      .from('lg_players')
+      .update({ club_id: transfer.to_club_id, club_folio: assignedFolio })
+      .eq('id', transfer.player_id);
+
+    // 5. Marcar traspaso como ACEPTADO
     const { data: updated, error: updateError } = await supabaseAdmin
       .from('lg_transfers')
       .update({ status: 'ACEPTADO', updated_at: new Date().toISOString() })

@@ -47,11 +47,13 @@ export const createPlayerInClub = async (event) => {
     let assignedFolio = body.club_folio !== undefined ? parseInt(body.club_folio, 10) : null;
 
     if (assignedFolio === null) {
-      // Auto-asignar: buscar folios ya usados en el club (ACTIVE e INACTIVE para no reutilizar)
+      // Auto-asignar: solo folios con roster ACTIVE cuentan como ocupados
+      // Los folios de jugadores traspasados (INACTIVE) quedan disponibles
       const { data: usedFolios } = await supabaseAdmin
         .from('lg_club_rosters')
         .select('club_folio')
         .eq('club_id', clubId)
+        .eq('status', 'ACTIVE')
         .not('club_folio', 'is', null);
 
       const used = new Set((usedFolios ?? []).map(r => r.club_folio));
@@ -73,6 +75,7 @@ export const createPlayerInClub = async (event) => {
         .select('id')
         .eq('club_id', clubId)
         .eq('club_folio', assignedFolio)
+        .eq('status', 'ACTIVE')
         .maybeSingle();
 
       if (folioInUse) {
@@ -84,19 +87,19 @@ export const createPlayerInClub = async (event) => {
     const { data: player, error: playerError } = await supabaseAdmin
       .from('lg_players')
       .insert({
-        org_id:        club.org_id,
-        club_id:       clubId,
-        first_name:    body.first_name,
-        last_name:     body.last_name,
-        rut:           body.rut,
-        birth_date:    body.birth_date,
-        address:       body.address,
-        phone:         body.phone,
-        email:         body.email,
-        photo_url:     body.photo_url,
-        jersey_number: body.jersey_number,
-        position:      body.position,
-        category_id:   body.category_id
+        org_id:      club.org_id,
+        club_id:     clubId,
+        first_name:  body.first_name,
+        last_name:   body.last_name,
+        rut:         body.rut,
+        birth_date:  body.birth_date,
+        address:     body.address,
+        phone:       body.phone,
+        email:       body.email,
+        photo_url:   body.photo_url,
+        position:    body.position,
+        category_id: body.category_id,
+        club_folio:  assignedFolio,
       })
       .select()
       .single();
