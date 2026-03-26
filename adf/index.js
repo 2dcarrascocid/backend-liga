@@ -56,6 +56,7 @@ export { PlayersSpecialist } from './specialists/players_specialist.js';
 export { LoansSpecialist } from './specialists/loans_specialist.js';
 export { CategoriesSpecialist } from './specialists/categories_specialist.js';
 export { TransfersSpecialist } from './specialists/transfers_specialist.js';
+export { PlayerDocumentsSpecialist } from './specialists/player_documents_specialist.js';
 
 // Orchestrator
 export { AgentOrchestrator } from './orchestrator/agent_orchestrator.js';
@@ -83,6 +84,7 @@ import { PlayersSpecialist as _PlayersSpecialist } from './specialists/players_s
 import { LoansSpecialist as _LoansSpecialist } from './specialists/loans_specialist.js';
 import { CategoriesSpecialist as _CategoriesSpecialist } from './specialists/categories_specialist.js';
 import { TransfersSpecialist as _TransfersSpecialist } from './specialists/transfers_specialist.js';
+import { PlayerDocumentsSpecialist as _PlayerDocumentsSpecialist } from './specialists/player_documents_specialist.js';
 import { supabaseAdmin } from '../services/db.js';
 
 const _validators = {
@@ -97,7 +99,8 @@ const _specialists = {
   players:    new _PlayersSpecialist(),
   loans:      new _LoansSpecialist(),
   categories: new _CategoriesSpecialist(),
-  transfers:  new _TransfersSpecialist(),
+  transfers:        new _TransfersSpecialist(),
+  player_documents: new _PlayerDocumentsSpecialist(),
 };
 
 const _orchestrator = new _AgentOrchestrator({

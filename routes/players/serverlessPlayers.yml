@@ -53,3 +53,31 @@ uploadPlayerPhoto:
     - httpApi:
         path: /players/{playerId}/photo
         method: post
+
+listPlayerDocuments:
+  handler: ${file(./routes/players/functionPlayers.yml):listPlayerDocuments.handler}
+  events:
+    - httpApi:
+        path: /players/{playerId}/documents
+        method: get
+
+registerPlayerDocument:
+  handler: ${file(./routes/players/functionPlayers.yml):registerPlayerDocument.handler}
+  events:
+    - httpApi:
+        path: /players/{playerId}/documents
+        method: post
+
+getPlayerDocument:
+  handler: ${file(./routes/players/functionPlayers.yml):getPlayerDocument.handler}
+  events:
+    - httpApi:
+        path: /players/{playerId}/documents/{documentId}
+        method: get
+
+deletePlayerDocument:
+  handler: ${file(./routes/players/functionPlayers.yml):deletePlayerDocument.handler}
+  events:
+    - httpApi:
+        path: /players/{playerId}/documents/{documentId}
+        method: delete

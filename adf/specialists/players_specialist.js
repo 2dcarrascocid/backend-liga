@@ -6,19 +6,21 @@
  *
  * DO:
  *   - Operar sobre lg_players y lg_club_rosters
- *   - En CREATE_PLAYER: verificar cupo, auto-asignar folio del rango del club, crear jugador y roster
- *   - En CHANGE_CLUB: desactivar roster actual y activar en nuevo club
+ *   - En CREATE_PLAYER: verificar cupo, auto-asignar folio libre del rango del club, crear jugador y roster
+ *   - En CHANGE_CLUB: desactivar roster actual, asignar folio libre en nuevo club
  *   - Incluir roster activo en respuestas de detalle de jugador
+ *   - Guardar club_folio también en lg_players para consultas directas
  *
  * DON'T:
- *   - No manejar traspasos — usar TransfersSpecialist
+ *   - No manejar traspasos formales — usar TransfersSpecialist
  *   - No modificar la tabla de auth.users
  *   - No lanzar excepciones no controladas
  *
  * Reglas de folio:
  *   - El club define folio_start, folio_end, max_players en lg_clubs
- *   - Al crear jugador: buscar primer folio libre en [folio_start, folio_end] no usado en ningún roster del club
- *   - Si se provee club_folio manual: validar que esté en rango y no esté en uso
+ *   - Solo los rosters ACTIVE cuentan como "folio ocupado" — los INACTIVE liberan su folio
+ *   - Al crear jugador: buscar primer folio libre en [folio_start, folio_end] entre rosters ACTIVE
+ *   - Si se provee club_folio manual: validar rango y que no esté en uso en roster ACTIVE
  *   - Errores: ROSTER_FULL | NO_FOLIO_AVAILABLE | FOLIO_OUT_OF_RANGE | FOLIO_IN_USE
  *
  * Capabilities:
@@ -26,12 +28,14 @@
  *   UPDATE_PLAYER | UPDATE_STATUS | CHANGE_CLUB
  *
  * Checklist:
- *   [ ] ¿CREATE verifica cupo antes de insertar?
- *   [ ] ¿CREATE auto-asigna folio o valida el folio manual?
- *   [ ] ¿CREATE crea jugador Y roster en secuencia con rollback?
- *   [ ] ¿CHANGE_CLUB desactiva el roster anterior?
- *   [ ] ¿Los listados incluyen paginación?
- *   [ ] ¿Se retorna el roster activo en GET_PLAYER?
+ *   [x] ¿CREATE verifica cupo antes de insertar?
+ *   [x] ¿CREATE auto-asigna folio consultando solo rosters ACTIVE?
+ *   [x] ¿CREATE valida folio manual contra rosters ACTIVE?
+ *   [x] ¿CREATE guarda club_folio en lg_players?
+ *   [x] ¿CREATE crea jugador Y roster en secuencia con rollback?
+ *   [x] ¿CHANGE_CLUB desactiva el roster anterior y asigna folio en destino?
+ *   [x] ¿Los listados incluyen paginación?
+ *   [x] ¿Se retorna el roster activo en GET_PLAYER?
  */
 
 import { Skill } from '../contracts/skill_contract.js';
@@ -45,38 +49,43 @@ const CAPABILITIES = [
 
 export class PlayersSpecialist extends Skill {
   constructor() {
-    super('players_specialist', '1.0.0');
+    super('players_specialist', '1.1.0');
     this.domain = 'players';
     this.capabilities = CAPABILITIES;
 
     this.contract = {
       input: [
-        { name: 'operation', required: true, type: 'string' },
-        { name: 'payload', required: true, type: 'object' },
-        { name: 'db', required: true, type: 'object' },
-        { name: 'userId', required: false, type: 'string' },
+        { name: 'operation', required: true,  type: 'string' },
+        { name: 'payload',   required: true,  type: 'object' },
+        { name: 'db',        required: true,  type: 'object' },
+        { name: 'userId',    required: false, type: 'string' },
       ],
       output: [
-        { name: 'player', type: 'object' },
-        { name: 'players', type: 'array' },
-        { name: 'roster', type: 'object' },
+        { name: 'player',    type: 'object' },
+        { name: 'players',   type: 'array'  },
+        { name: 'roster',    type: 'object' },
         { name: 'nextToken', type: 'string' },
       ],
       rules: {
         do: [
           'Crear roster activo junto con el jugador en CREATE_PLAYER',
-          'Desactivar roster anterior en CHANGE_CLUB',
+          'Guardar club_folio en lg_players al crear o cambiar de club',
+          'Buscar folio libre solo entre rosters ACTIVE (los INACTIVE liberan folio)',
+          'Desactivar roster anterior en CHANGE_CLUB y asignar folio libre en destino',
           'Incluir roster activo en GET_PLAYER',
+          'Filtrar por status=ACTIVE en LIST_PLAYERS_BY_CLUB por defecto',
           'Buscar con ilike en listados con query param',
         ],
         dont: [
-          'No manejar préstamos (usar LoansSpecialist)',
+          'No manejar traspasos formales (usar TransfersSpecialist)',
           'No modificar auth.users',
+          'No reutilizar folios de rosters INACTIVE al validar folio manual',
         ],
       },
       checklist: [
-        'CREATE_PLAYER crea jugador y roster en secuencia',
-        'CHANGE_CLUB desactiva roster previo',
+        'CREATE_PLAYER crea jugador y roster en secuencia con rollback',
+        'CREATE_PLAYER guarda club_folio en lg_players',
+        'CHANGE_CLUB desactiva roster previo y asigna folio libre en destino',
         'GET_PLAYER incluye roster activo',
         'Paginación aplicada en listados',
       ],
@@ -113,15 +122,14 @@ export class PlayersSpecialist extends Skill {
     }
   }
 
-  async _createPlayer(payload, db) {
-    const {
-      orgId, clubId,
-      firstName, lastName, rut, birthDate,
-      address, phone, email, photoUrl, jerseyNumber, position, categoryId,
-      clubFolio,
-    } = payload;
+  // ── Helpers ──────────────────────────────────────────────────────────────
 
-    // 1. Obtener config de folios del club
+  /**
+   * Obtiene config del club y busca el primer folio libre entre rosters ACTIVE.
+   * Los rosters INACTIVE liberan su folio (disponible para reasignar).
+   * @returns { folioStart, folioEnd, maxPlayers, assignedFolio } o error
+   */
+  async _resolveClubFolio(clubId, requestedFolio, db) {
     const { data: club, error: clubErr } = await db
       .from('lg_clubs')
       .select('id, org_id, folio_start, folio_end, max_players')
@@ -129,14 +137,14 @@ export class PlayersSpecialist extends Skill {
       .single();
 
     if (clubErr || !club) {
-      return createSkillResult({ success: false, errorCode: 'CLUB_NOT_FOUND', errorMessage: 'Club no encontrado' });
+      return { error: { code: 'CLUB_NOT_FOUND', message: 'Club no encontrado' } };
     }
 
     const folioStart = club.folio_start ?? 1;
     const folioEnd   = club.folio_end   ?? 70;
     const maxPlayers = club.max_players ?? 70;
 
-    // 2. Verificar cupo máximo
+    // Verificar cupo
     const { count: activeCount } = await db
       .from('lg_club_rosters')
       .select('id', { count: 'exact', head: true })
@@ -144,65 +152,82 @@ export class PlayersSpecialist extends Skill {
       .eq('status', 'ACTIVE');
 
     if (activeCount >= maxPlayers) {
-      return createSkillResult({
-        success: false,
-        errorCode: 'ROSTER_FULL',
-        errorMessage: `El club alcanzó el máximo de ${maxPlayers} jugadores activos`,
-      });
+      return { error: { code: 'ROSTER_FULL', message: `El club alcanzó el máximo de ${maxPlayers} jugadores activos` } };
     }
 
-    // 3. Determinar folio a asignar
-    let assignedFolio = clubFolio !== undefined ? parseInt(clubFolio, 10) : null;
+    // Folios actualmente ocupados (solo ACTIVE)
+    const { data: usedRows } = await db
+      .from('lg_club_rosters')
+      .select('club_folio')
+      .eq('club_id', clubId)
+      .eq('status', 'ACTIVE')
+      .not('club_folio', 'is', null);
 
-    if (assignedFolio === null) {
-      // Auto-asignar: primer folio libre en el rango (no reutilizar folios aunque el jugador sea inactivo)
-      const { data: usedFolios } = await db
-        .from('lg_club_rosters')
-        .select('club_folio')
-        .eq('club_id', clubId)
-        .not('club_folio', 'is', null);
+    const used = new Set((usedRows ?? []).map(r => r.club_folio));
 
-      const used = new Set((usedFolios ?? []).map(r => r.club_folio));
+    let assignedFolio;
+
+    if (requestedFolio !== undefined && requestedFolio !== null) {
+      const f = parseInt(requestedFolio, 10);
+      if (f < folioStart || f > folioEnd) {
+        return { error: { code: 'FOLIO_OUT_OF_RANGE', message: `El folio debe estar entre ${folioStart} y ${folioEnd}` } };
+      }
+      if (used.has(f)) {
+        return { error: { code: 'FOLIO_IN_USE', message: `El folio ${f} ya está en uso en este club` } };
+      }
+      assignedFolio = f;
+    } else {
+      // Auto-asignar primer folio libre
+      assignedFolio = null;
       for (let f = folioStart; f <= folioEnd; f++) {
         if (!used.has(f)) { assignedFolio = f; break; }
       }
-
       if (assignedFolio === null) {
-        return createSkillResult({ success: false, errorCode: 'NO_FOLIO_AVAILABLE', errorMessage: 'No hay folios disponibles en el rango configurado' });
-      }
-    } else {
-      if (assignedFolio < folioStart || assignedFolio > folioEnd) {
-        return createSkillResult({ success: false, errorCode: 'FOLIO_OUT_OF_RANGE', errorMessage: `El folio debe estar entre ${folioStart} y ${folioEnd}` });
-      }
-      const { data: inUse } = await db
-        .from('lg_club_rosters')
-        .select('id')
-        .eq('club_id', clubId)
-        .eq('club_folio', assignedFolio)
-        .maybeSingle();
-
-      if (inUse) {
-        return createSkillResult({ success: false, errorCode: 'FOLIO_IN_USE', errorMessage: `El folio ${assignedFolio} ya está en uso en este club` });
+        return { error: { code: 'NO_FOLIO_AVAILABLE', message: 'No hay folios disponibles en el rango configurado' } };
       }
     }
 
-    // 4. Insertar jugador
+    return { club, folioStart, folioEnd, maxPlayers, assignedFolio };
+  }
+
+  // ── Operations ───────────────────────────────────────────────────────────
+
+  async _createPlayer(payload, db) {
+    const {
+      clubId,
+      firstName, lastName, rut, birthDate,
+      address, phone, email, photoUrl, position, categoryId,
+      clubFolio,
+    } = payload;
+
+    // 1. Resolver folio
+    const folioResult = await this._resolveClubFolio(clubId, clubFolio, db);
+    if (folioResult.error) {
+      return createSkillResult({
+        success: false,
+        errorCode: folioResult.error.code,
+        errorMessage: folioResult.error.message,
+      });
+    }
+    const { club, assignedFolio } = folioResult;
+
+    // 2. Insertar jugador (incluye club_folio para consultas directas)
     const { data: player, error: playerErr } = await db
       .from('lg_players')
       .insert({
-        org_id:        orgId ?? club.org_id,
-        club_id:       clubId,
-        first_name:    firstName,
-        last_name:     lastName,
+        org_id:     club.org_id,
+        club_id:    clubId,
+        first_name: firstName,
+        last_name:  lastName,
         rut,
-        birth_date:    birthDate,
+        birth_date: birthDate,
         address,
         phone,
         email,
-        photo_url:     photoUrl,
-        jersey_number: jerseyNumber,
+        photo_url:  photoUrl,
         position,
-        category_id:   categoryId,
+        category_id: categoryId,
+        club_folio:  assignedFolio,
       })
       .select()
       .single();
@@ -212,11 +237,11 @@ export class PlayersSpecialist extends Skill {
       return createSkillResult({
         success: false,
         errorCode: isDuplicate ? 'DUPLICATE_RUT' : 'CREATE_PLAYER_FAILED',
-        errorMessage: isDuplicate ? `Ya existe un jugador con rut "${rut}"` : playerErr.message,
+        errorMessage: isDuplicate ? `Ya existe un jugador con RUT "${rut}"` : playerErr.message,
       });
     }
 
-    // 5. Insertar roster activo con folio asignado
+    // 3. Insertar roster activo con folio asignado
     const { data: roster, error: rosterErr } = await db
       .from('lg_club_rosters')
       .insert({
@@ -230,6 +255,7 @@ export class PlayersSpecialist extends Skill {
       .single();
 
     if (rosterErr) {
+      // Rollback jugador
       await db.from('lg_players').delete().eq('id', player.id);
       return createSkillResult({ success: false, errorCode: 'CREATE_ROSTER_FAILED', errorMessage: rosterErr.message });
     }
@@ -240,55 +266,71 @@ export class PlayersSpecialist extends Skill {
   async _getPlayer({ playerId }, db) {
     const { data: player, error } = await db
       .from('lg_players')
-      .select('*, lg_club_rosters!inner(id, club_id, status, club_folio, valid_from, valid_to, lg_clubs(id, name))')
+      .select('*, active_roster:lg_club_rosters(*)')
       .eq('id', playerId)
-      .eq('lg_club_rosters.status', 'ACTIVE')
-      .maybeSingle();
+      .single();
 
     if (error) return createSkillResult({ success: false, errorCode: 'GET_PLAYER_FAILED', errorMessage: error.message });
     if (!player) return createSkillResult({ success: false, errorCode: 'PLAYER_NOT_FOUND', errorMessage: 'Jugador no encontrado' });
 
-    return createSkillResult({ success: true, data: { player } });
+    const activeRoster = (player.active_roster ?? []).find(r => r.status === 'ACTIVE') || null;
+
+    return createSkillResult({ success: true, data: { player: { ...player, active_roster: activeRoster } } });
   }
 
-  async _listByClub({ clubId, q, status, limit = 20 }, db) {
+  async _listByClub({ clubId, q, status = 'ACTIVE', limit = 10, next_token }, db) {
+    let offset = 0;
+    if (next_token) {
+      try { offset = JSON.parse(atob(next_token)).offset ?? 0; } catch { offset = 0; }
+    }
+
     let query = db
       .from('lg_club_rosters')
-      .select('id, status, club_folio, valid_from, valid_to, lg_players(id, first_name, last_name, national_id, position, jersey_number, photo_url)')
+      .select('*, player:lg_players!inner(*)', { count: 'exact' })
       .eq('club_id', clubId)
-      .order('club_folio')
-      .limit(limit);
-
-    if (status) query = query.eq('status', status);
+      .eq('status', status)
+      .order('club_folio', { ascending: true, nullsFirst: false })
+      .range(offset, offset + limit - 1);
 
     if (q) {
       query = query.or(
-        `lg_players.first_name.ilike.%${q}%,lg_players.last_name.ilike.%${q}%,lg_players.national_id.ilike.%${q}%`
+        `first_name.ilike.%${q}%,last_name.ilike.%${q}%,rut.ilike.%${q}%`,
+        { foreignTable: 'lg_players' }
       );
     }
 
-    const { data: players, error } = await query;
+    const { data, error, count } = await query;
     if (error) return createSkillResult({ success: false, errorCode: 'LIST_PLAYERS_FAILED', errorMessage: error.message });
 
-    return createSkillResult({ success: true, data: { players } });
+    const total   = count ?? 0;
+    const hasMore = offset + limit < total;
+    const newToken = hasMore ? btoa(JSON.stringify({ offset: offset + limit, limit })) : null;
+
+    return createSkillResult({ success: true, data: { data, next_token: newToken, total_registros: total, limit } });
   }
 
   async _listByOrg({ orgId, limit = 50 }, db) {
     const { data: players, error } = await db
       .from('lg_players')
-      .select('*, lg_club_rosters(id, club_id, status, club_folio, lg_clubs(id, name))')
+      .select('*, active_roster:lg_club_rosters(*)')
       .eq('org_id', orgId)
-      .eq('lg_club_rosters.status', 'ACTIVE')
       .limit(limit);
 
     if (error) return createSkillResult({ success: false, errorCode: 'LIST_PLAYERS_ORG_FAILED', errorMessage: error.message });
 
-    return createSkillResult({ success: true, data: { players } });
+    const processed = players.map(p => ({
+      ...p,
+      active_roster: (p.active_roster ?? []).find(r => r.status === 'ACTIVE') || null,
+    }));
+
+    return createSkillResult({ success: true, data: { players: processed } });
   }
 
   async _updatePlayer({ playerId, ...updates }, db) {
-    const allowed = ['first_name', 'last_name', 'birth_date', 'address', 'phone', 'email',
-      'jersey_number', 'position', 'category_id', 'photo_url'];
+    const allowed = [
+      'first_name', 'last_name', 'birth_date', 'address',
+      'phone', 'email', 'position', 'category_id', 'photo_url',
+    ];
     const patch = Object.fromEntries(
       Object.entries(updates).filter(([k]) => allowed.includes(k))
     );
@@ -324,7 +366,7 @@ export class PlayersSpecialist extends Skill {
   }
 
   async _changeClub({ playerId, fromClubId, toClubId }, db) {
-    // Step 1: Deactivate in current club
+    // 1. Desactivar roster en club origen (libera el folio)
     const { error: deactivateErr } = await db
       .from('lg_club_rosters')
       .update({ status: 'INACTIVE', valid_to: new Date().toISOString() })
@@ -333,35 +375,48 @@ export class PlayersSpecialist extends Skill {
       .eq('status', 'ACTIVE');
 
     if (deactivateErr) {
-      return createSkillResult({
-        success: false,
-        errorCode: 'DEACTIVATE_ROSTER_FAILED',
-        errorMessage: deactivateErr.message,
-      });
+      return createSkillResult({ success: false, errorCode: 'DEACTIVATE_ROSTER_FAILED', errorMessage: deactivateErr.message });
     }
 
-    // Step 2: Activate in new club
+    // 2. Resolver folio libre en club destino
+    const folioResult = await this._resolveClubFolio(toClubId, undefined, db);
+    if (folioResult.error) {
+      // Revertir desactivación
+      await db.from('lg_club_rosters')
+        .update({ status: 'ACTIVE', valid_to: null })
+        .eq('player_id', playerId)
+        .eq('club_id', fromClubId);
+      return createSkillResult({ success: false, errorCode: folioResult.error.code, errorMessage: folioResult.error.message });
+    }
+    const { assignedFolio } = folioResult;
+
+    // 3. Crear roster activo en club destino con folio asignado
     const { data: newRoster, error: activateErr } = await db
       .from('lg_club_rosters')
-      .insert({ club_id: toClubId, player_id: playerId, status: 'ACTIVE' })
+      .insert({
+        club_id:    toClubId,
+        player_id:  playerId,
+        status:     'ACTIVE',
+        valid_from: new Date().toISOString(),
+        club_folio: assignedFolio,
+      })
       .select()
       .single();
 
     if (activateErr) {
-      // Revert deactivation
-      await db
-        .from('lg_club_rosters')
+      // Revertir desactivación
+      await db.from('lg_club_rosters')
         .update({ status: 'ACTIVE', valid_to: null })
         .eq('player_id', playerId)
         .eq('club_id', fromClubId);
-
-      return createSkillResult({
-        success: false,
-        errorCode: 'ACTIVATE_ROSTER_FAILED',
-        errorMessage: activateErr.message,
-      });
+      return createSkillResult({ success: false, errorCode: 'ACTIVATE_ROSTER_FAILED', errorMessage: activateErr.message });
     }
 
-    return createSkillResult({ success: true, data: { roster: newRoster, fromClubId, toClubId } });
+    // 4. Actualizar club_folio en lg_players
+    await db.from('lg_players')
+      .update({ club_id: toClubId, club_folio: assignedFolio })
+      .eq('id', playerId);
+
+    return createSkillResult({ success: true, data: { roster: newRoster, fromClubId, toClubId, assignedFolio } });
   }
 }
