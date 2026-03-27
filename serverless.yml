@@ -14,41 +14,31 @@ provider:
   httpApi:
     cors:
       allowedOrigins:
-        - '*'                # todos los orígenes
+        - '*'
       allowedHeaders:
-        - '*' 
+        - '*'
       allowedMethods:
-        - '*'  
+        - '*'
       allowCredentials: false
-      
+
 functions:
-  - ${file(./routes/auth/serverlessLogin.yml)}
-  - ${file(./routes/clubs/serverlessClubs.yml)}
-  - ${file(./routes/players/serverlessPlayers.yml)}
-  - ${file(./routes/categories/serverlessCategories.yml)}
-  - ${file(./routes/transfers/serverlessTransfers.yml)}
-  - ${file(./routes/adf/serverlessAdf.yml)}
+  api:
+    handler: handler.handler
+    memorySize: 512
+    timeout: 29
+    events:
+      - httpApi:
+          path: /{proxy+}
+          method: ANY
+      - httpApi:
+          path: /
+          method: ANY
 
 plugins:
   - serverless-offline
-  
 
 package:
-  individually: true
-  exclude:
-    - node_modules/**
-    - .serverless/**
-    - .webpack/**
-    - logs/**
-    - tmp/**
-    - data/**
-    - "**/*.map"
-    - "**/*.zip"
-    - "**/*.md"
-    - "**/*.log"
-
-
-
+  individually: false
 
 build:
   esbuild:
@@ -57,6 +47,7 @@ build:
     target: node20
     platform: node
     external:
+      - '@aws-sdk/*'
       - aws-sdk
     banner:
       js: "import { createRequire } from 'module'; const require = createRequire(import.meta.url);"
@@ -64,4 +55,3 @@ build:
 custom:
   serverless-offline:
     disableCookieValidation: true
-      
