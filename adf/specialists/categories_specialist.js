@@ -98,11 +98,32 @@ export class CategoriesSpecialist extends Skill {
     }
   }
 
-  async _listCategories({ orgId }, db) {
+  async _resolveOrgId({ orgId, clubId }, db) {
+    if (orgId) return orgId;
+    if (!clubId) return null;
+    const { data: club } = await db
+      .from('lg_clubs')
+      .select('org_id')
+      .eq('id', clubId)
+      .maybeSingle();
+    return club?.org_id ?? null;
+  }
+
+  async _listCategories({ orgId, clubId }, db) {
+    const resolvedOrgId = await this._resolveOrgId({ orgId, clubId }, db);
+
+    if (!resolvedOrgId) {
+      return createSkillResult({
+        success: false,
+        errorCode: 'MISSING_ORG',
+        errorMessage: 'No se pudo determinar la organización del club',
+      });
+    }
+
     const { data: categories, error } = await db
       .from('lg_categories')
       .select('*')
-      .eq('org_id', orgId)
+      .eq('org_id', resolvedOrgId)
       .order('age_from', { ascending: true, nullsFirst: true });
 
     if (error) {
@@ -116,19 +137,21 @@ export class CategoriesSpecialist extends Skill {
     return createSkillResult({ success: true, data: { categories } });
   }
 
-  async _createCategory({ orgId, name, color, ageFrom, ageTo, description }, db) {
-    if (!orgId || !name) {
+  async _createCategory({ orgId, clubId, name, color, ageFrom, ageTo, description }, db) {
+    const resolvedOrgId = await this._resolveOrgId({ orgId, clubId }, db);
+
+    if (!resolvedOrgId || !name) {
       return createSkillResult({
         success: false,
         errorCode: 'MISSING_FIELDS',
-        errorMessage: 'org_id y name son requeridos',
+        errorMessage: 'club_id (o org_id) y name son requeridos',
       });
     }
 
     const { data: category, error } = await db
       .from('lg_categories')
       .insert({
-        org_id:      orgId,
+        org_id:      resolvedOrgId,
         name,
         color:       color       ?? '#6366f1',
         age_from:    ageFrom     ?? null,
@@ -181,13 +204,15 @@ export class CategoriesSpecialist extends Skill {
     return createSkillResult({ success: true, data: { category } });
   }
 
-  async _deleteCategory({ categoryId, orgId }, db) {
+  async _deleteCategory({ categoryId, orgId, clubId }, db) {
+    const resolvedOrgId = await this._resolveOrgId({ orgId, clubId }, db);
+
     // Verificar que pertenece a la org
     const { data: existing, error: fetchErr } = await db
       .from('lg_categories')
       .select('id')
       .eq('id', categoryId)
-      .eq('org_id', orgId)
+      .eq('org_id', resolvedOrgId)
       .maybeSingle();
 
     if (fetchErr || !existing) {

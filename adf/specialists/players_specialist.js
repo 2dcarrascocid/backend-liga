@@ -44,7 +44,7 @@ import { createSkillResult } from '../contracts/task_schema.js';
 const CAPABILITIES = [
   'CREATE_PLAYER', 'GET_PLAYER',
   'LIST_PLAYERS_BY_CLUB', 'LIST_PLAYERS_BY_ORG',
-  'UPDATE_PLAYER', 'UPDATE_STATUS', 'CHANGE_CLUB',
+  'UPDATE_PLAYER', 'UPDATE_STATUS', 'CHANGE_CLUB', 'UPLOAD_PHOTO',
 ];
 
 export class PlayersSpecialist extends Skill {
@@ -112,6 +112,7 @@ export class PlayersSpecialist extends Skill {
         case 'UPDATE_PLAYER':         return this._updatePlayer(payload, db);
         case 'UPDATE_STATUS':         return this._updateStatus(payload, db);
         case 'CHANGE_CLUB':           return this._changeClub(payload, db, userId);
+        case 'UPLOAD_PHOTO':          return this._uploadPhoto(payload, db);
       }
     } catch (err) {
       return createSkillResult({
@@ -332,7 +333,9 @@ export class PlayersSpecialist extends Skill {
       'phone', 'email', 'position', 'category_id', 'photo_url',
     ];
     const patch = Object.fromEntries(
-      Object.entries(updates).filter(([k]) => allowed.includes(k))
+      Object.entries(updates)
+        .filter(([k]) => allowed.includes(k))
+        .map(([k, v]) => [k, v === '' ? null : v])
     );
 
     if (Object.keys(patch).length === 0) {
@@ -366,12 +369,31 @@ export class PlayersSpecialist extends Skill {
   }
 
   async _changeClub({ playerId, fromClubId, toClubId }, db) {
+    // Si fromClubId no viene en el payload, lo resolvemos desde el roster activo
+    let originClubId = fromClubId;
+    if (!originClubId) {
+      const { data: activeRoster } = await db
+        .from('lg_club_rosters')
+        .select('club_id')
+        .eq('player_id', playerId)
+        .eq('status', 'ACTIVE')
+        .maybeSingle();
+      if (!activeRoster) {
+        return createSkillResult({
+          success: false,
+          errorCode: 'PLAYER_NOT_ACTIVE',
+          errorMessage: 'El jugador no tiene un roster activo',
+        });
+      }
+      originClubId = activeRoster.club_id;
+    }
+
     // 1. Desactivar roster en club origen (libera el folio)
     const { error: deactivateErr } = await db
       .from('lg_club_rosters')
       .update({ status: 'INACTIVE', valid_to: new Date().toISOString() })
       .eq('player_id', playerId)
-      .eq('club_id', fromClubId)
+      .eq('club_id', originClubId)
       .eq('status', 'ACTIVE');
 
     if (deactivateErr) {
@@ -385,7 +407,7 @@ export class PlayersSpecialist extends Skill {
       await db.from('lg_club_rosters')
         .update({ status: 'ACTIVE', valid_to: null })
         .eq('player_id', playerId)
-        .eq('club_id', fromClubId);
+        .eq('club_id', originClubId);
       return createSkillResult({ success: false, errorCode: folioResult.error.code, errorMessage: folioResult.error.message });
     }
     const { assignedFolio } = folioResult;
@@ -408,7 +430,7 @@ export class PlayersSpecialist extends Skill {
       await db.from('lg_club_rosters')
         .update({ status: 'ACTIVE', valid_to: null })
         .eq('player_id', playerId)
-        .eq('club_id', fromClubId);
+        .eq('club_id', originClubId);
       return createSkillResult({ success: false, errorCode: 'ACTIVATE_ROSTER_FAILED', errorMessage: activateErr.message });
     }
 
@@ -417,6 +439,25 @@ export class PlayersSpecialist extends Skill {
       .update({ club_id: toClubId, club_folio: assignedFolio })
       .eq('id', playerId);
 
-    return createSkillResult({ success: true, data: { roster: newRoster, fromClubId, toClubId, assignedFolio } });
+    return createSkillResult({ success: true, data: { roster: newRoster, fromClubId: originClubId, toClubId, assignedFolio } });
+  }
+
+  async _uploadPhoto({ playerId, photoUrl }, db) {
+    if (!photoUrl) {
+      return createSkillResult({ success: false, errorCode: 'MISSING_PHOTO_URL', errorMessage: 'photo_url es requerido' });
+    }
+
+    const { data: player, error } = await db
+      .from('lg_players')
+      .update({ photo_url: photoUrl })
+      .eq('id', playerId)
+      .select()
+      .single();
+
+    if (error) {
+      return createSkillResult({ success: false, errorCode: 'UPLOAD_PHOTO_FAILED', errorMessage: error.message });
+    }
+
+    return createSkillResult({ success: true, data: { player } });
   }
 }

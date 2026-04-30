@@ -56,22 +56,22 @@ const ROUTES = [
 
   // ── Auth ──────────────────────────────────────────────────────────────────
 
-  route('POST', '/auth/login/local', (pp, body) => ({
+  route('POST', '/auth/login/local', (_pp, body) => ({
     type: 'LOGIN_LOCAL', domain: 'auth',
     input: { email: body.email, password: body.password },
   })),
 
-  route('POST', '/auth/login/google', (pp, body) => ({
+  route('POST', '/auth/login/google', (_pp, body) => ({
     type: 'LOGIN_GOOGLE', domain: 'auth',
     input: { idToken: body.id_token ?? body.idToken },
   })),
 
-  route('POST', '/auth/login/facebook', (pp, body) => ({
+  route('POST', '/auth/login/facebook', (_pp, body) => ({
     type: 'LOGIN_FACEBOOK', domain: 'auth',
     input: { idToken: body.access_token ?? body.id_token ?? body.idToken },
   })),
 
-  route('POST', '/auth/bootstrap', (pp, body) => ({
+  route('POST', '/auth/bootstrap', (_pp, body) => ({
     type: 'BOOTSTRAP', domain: 'auth',
     input: {
       orgName:     body.org_name,
@@ -82,7 +82,7 @@ const ROUTES = [
 
   // ── Clubs ─────────────────────────────────────────────────────────────────
 
-  route('POST', '/clubs', (pp, body) => ({
+  route('POST', '/clubs', (_pp, body) => ({
     type: 'CREATE_CLUB', domain: 'clubs',
     input: {
       orgId:       body.org_id,
@@ -97,7 +97,7 @@ const ROUTES = [
     },
   })),
 
-  route('GET', '/clubs', (pp, body, qs) => ({
+  route('GET', '/clubs', (_pp, _body, qs) => ({
     type: 'GET_CLUBS', domain: 'clubs',
     input: {
       orgId:     qs.org_id,
@@ -136,7 +136,7 @@ const ROUTES = [
     },
   })),
 
-  route('GET', '/clubs/{clubId}/roster', (pp, body, qs) => ({
+  route('GET', '/clubs/{clubId}/roster', (pp, _body, qs) => ({
     type: 'GET_ROSTER', domain: 'clubs',
     input: {
       clubId:    pp.clubId,
@@ -171,7 +171,7 @@ const ROUTES = [
     },
   })),
 
-  route('GET', '/clubs/{clubId}/players', (pp, body, qs) => ({
+  route('GET', '/clubs/{clubId}/players', (pp, _body, qs) => ({
     type: 'LIST_PLAYERS_BY_CLUB', domain: 'players',
     input: {
       clubId:     pp.clubId,
@@ -187,7 +187,7 @@ const ROUTES = [
     input: { clubId: pp.clubId, playerId: pp.playerId, status: body.status },
   })),
 
-  route('GET', '/orgs/{orgId}/players', (pp, body, qs) => ({
+  route('GET', '/orgs/{orgId}/players', (pp, _body, qs) => ({
     type: 'LIST_PLAYERS_BY_ORG', domain: 'players',
     input: { orgId: pp.orgId, limit: qs.limit ? parseInt(qs.limit, 10) : 50 },
   })),

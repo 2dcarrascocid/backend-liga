@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//c/Users/Delta/.claude/projects/c--Users-Delta-Documents-PROYECTOS-2026-backend-liga/memory/**)",
+      "Bash(git restore *)",
+      "Bash(del \"c:\\\\Users\\\\Delta\\\\Documents\\\\PROYECTOS\\\\2026\\\\backend-liga\\\\migrations\\\\20260430_create_lg_api_keys.sql\")"
+    ]
+  }
+}

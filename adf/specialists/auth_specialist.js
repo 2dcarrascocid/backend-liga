@@ -137,7 +137,8 @@ export class AuthSpecialist extends Skill {
     // Legacy user migration: check bcrypt password in auth.users
     if (error?.message?.toLowerCase().includes('invalid')) {
       const { data: legacyUser } = await supabase
-        .from('auth.users')
+        .schema('auth')
+        .from('users')
         .select('id, encrypted_password')
         .eq('email', email)
         .maybeSingle();
