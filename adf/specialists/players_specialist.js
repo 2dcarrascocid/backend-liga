@@ -105,12 +105,12 @@ export class PlayersSpecialist extends Skill {
 
     try {
       switch (operation) {
-        case 'CREATE_PLAYER':         return this._createPlayer(payload, db);
+        case 'CREATE_PLAYER':         return this._createPlayer(payload, db, userId);
         case 'GET_PLAYER':            return this._getPlayer(payload, db);
         case 'LIST_PLAYERS_BY_CLUB':  return this._listByClub(payload, db);
         case 'LIST_PLAYERS_BY_ORG':   return this._listByOrg(payload, db);
         case 'UPDATE_PLAYER':         return this._updatePlayer(payload, db);
-        case 'UPDATE_STATUS':         return this._updateStatus(payload, db);
+        case 'UPDATE_STATUS':         return this._updateStatus(payload, db, userId);
         case 'CHANGE_CLUB':           return this._changeClub(payload, db, userId);
         case 'UPLOAD_PHOTO':          return this._uploadPhoto(payload, db);
       }
@@ -193,13 +193,34 @@ export class PlayersSpecialist extends Skill {
 
   // ── Operations ───────────────────────────────────────────────────────────
 
-  async _createPlayer(payload, db) {
+  // Verifica que userId sea org ADMIN o ADMIN_CLUB del club específico
+  async _assertClubAccess(clubId, userId, db) {
+    const { data: club } = await db.from('lg_clubs').select('org_id').eq('id', clubId).single();
+    if (!club) return 'CLUB_NOT_FOUND';
+
+    const [{ data: orgAdmin }, { data: clubAdmin }] = await Promise.all([
+      db.from('lg_org_users').select('role')
+        .eq('user_id', userId).eq('org_id', club.org_id).maybeSingle(),
+      db.from('lg_club_users').select('role')
+        .eq('user_id', userId).eq('club_id', clubId).eq('role', 'ADMIN_CLUB').maybeSingle(),
+    ]);
+
+    if (orgAdmin?.role === 'ADMIN' || clubAdmin?.role === 'ADMIN_CLUB') return null;
+    return 'FORBIDDEN';
+  }
+
+  async _createPlayer(payload, db, userId) {
     const {
       clubId,
       firstName, lastName, rut, birthDate,
       address, phone, email, photoUrl, position, categoryId,
       clubFolio,
     } = payload;
+
+    const accessError = await this._assertClubAccess(clubId, userId, db);
+    if (accessError) {
+      return createSkillResult({ success: false, errorCode: accessError, errorMessage: 'No tienes permisos para crear jugadores en este club' });
+    }
 
     // 1. Resolver folio
     const folioResult = await this._resolveClubFolio(clubId, clubFolio, db);
@@ -354,7 +375,12 @@ export class PlayersSpecialist extends Skill {
     return createSkillResult({ success: true, data: { player } });
   }
 
-  async _updateStatus({ playerId, clubId, status }, db) {
+  async _updateStatus({ playerId, clubId, status }, db, userId) {
+    const accessError = await this._assertClubAccess(clubId, userId, db);
+    if (accessError) {
+      return createSkillResult({ success: false, errorCode: accessError, errorMessage: 'No tienes permisos para modificar jugadores en este club' });
+    }
+
     const { data: roster, error } = await db
       .from('lg_club_rosters')
       .update({ status })
@@ -368,7 +394,7 @@ export class PlayersSpecialist extends Skill {
     return createSkillResult({ success: true, data: { roster } });
   }
 
-  async _changeClub({ playerId, fromClubId, toClubId }, db) {
+  async _changeClub({ playerId, fromClubId, toClubId }, db, userId) {
     // Si fromClubId no viene en el payload, lo resolvemos desde el roster activo
     let originClubId = fromClubId;
     if (!originClubId) {
@@ -386,6 +412,11 @@ export class PlayersSpecialist extends Skill {
         });
       }
       originClubId = activeRoster.club_id;
+    }
+
+    const accessError = await this._assertClubAccess(originClubId, userId, db);
+    if (accessError) {
+      return createSkillResult({ success: false, errorCode: accessError, errorMessage: 'No tienes permisos para traspasar jugadores de este club' });
     }
 
     // 1. Desactivar roster en club origen (libera el folio)

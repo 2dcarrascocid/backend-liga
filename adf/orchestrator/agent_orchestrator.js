@@ -201,7 +201,11 @@ export class AgentOrchestrator {
     const { type, domain } = task;
 
     // Endpoints que NO requieren autenticación de usuario (solo API key)
-    const PUBLIC_OPERATIONS = new Set(['LOGIN_LOCAL', 'LOGIN_GOOGLE', 'LOGIN_FACEBOOK']);
+    const PUBLIC_OPERATIONS = new Set([
+      'LOGIN_LOCAL', 'LOGIN_GOOGLE', 'LOGIN_FACEBOOK',
+      'FORGOT_PASSWORD', 'RESET_PASSWORD',
+      'INVITE_INFO', 'ACCEPT_CLUB_INVITE',
+    ]);
     const requireAuth = !PUBLIC_OPERATIONS.has(type);
 
     // Obtener reglas de validación del catálogo

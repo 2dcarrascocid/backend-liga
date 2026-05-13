@@ -9,3 +9,9 @@ loginFacebook:
 
 bootstrap:
   handler: routes/auth/bootstrap.handler
+
+forgotPassword:
+  handler: routes/auth/forgotPassword.handler
+
+resetPassword:
+  handler: routes/auth/resetPassword.handler

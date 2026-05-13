@@ -25,3 +25,17 @@ bootstrap:
     - httpApi:
         path: /auth/bootstrap
         method: post
+
+forgotPassword:
+  handler: ${file(./routes/auth/functionLogin.yml):forgotPassword.handler}
+  events:
+    - httpApi:
+        path: /auth/forgot-password
+        method: post
+
+resetPassword:
+  handler: ${file(./routes/auth/functionLogin.yml):resetPassword.handler}
+  events:
+    - httpApi:
+        path: /auth/reset-password
+        method: post

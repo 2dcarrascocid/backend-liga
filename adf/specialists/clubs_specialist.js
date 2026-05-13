@@ -35,11 +35,14 @@
 
 import { Skill } from '../contracts/skill_contract.js';
 import { createSkillResult } from '../contracts/task_schema.js';
+import crypto from 'crypto';
+import { sendClubAdminInviteEmail } from '../../utils/mailer.js';
 
 const CAPABILITIES = [
   'CREATE_CLUB', 'GET_CLUBS', 'GET_CLUB', 'UPDATE_CLUB',
   'ADD_CLUB_USER', 'REMOVE_CLUB_USER',
   'ADD_ROSTER', 'GET_ROSTER', 'UPDATE_ROSTER',
+  'INVITE_CLUB_ADMIN', 'GET_CLUB_ADMINS', 'REMOVE_CLUB_ADMIN',
 ];
 
 export class ClubsSpecialist extends Skill {
@@ -98,11 +101,14 @@ export class ClubsSpecialist extends Skill {
         case 'GET_CLUBS':        return this._getClubs(payload, db);
         case 'GET_CLUB':         return this._getClub(payload, db);
         case 'UPDATE_CLUB':      return this._updateClub(payload, db, userId);
-        case 'ADD_CLUB_USER':    return this._addClubUser(payload, db, userId);
-        case 'REMOVE_CLUB_USER': return this._removeClubUser(payload, db, userId);
-        case 'ADD_ROSTER':       return this._addRoster(payload, db);
-        case 'GET_ROSTER':       return this._getRoster(payload, db);
-        case 'UPDATE_ROSTER':    return this._updateRoster(payload, db);
+        case 'ADD_CLUB_USER':      return this._addClubUser(payload, db, userId);
+        case 'REMOVE_CLUB_USER':   return this._removeClubUser(payload, db, userId);
+        case 'ADD_ROSTER':         return this._addRoster(payload, db);
+        case 'GET_ROSTER':         return this._getRoster(payload, db);
+        case 'UPDATE_ROSTER':      return this._updateRoster(payload, db);
+        case 'INVITE_CLUB_ADMIN':  return this._inviteClubAdmin(payload, db, userId);
+        case 'GET_CLUB_ADMINS':    return this._getClubAdmins(payload, db);
+        case 'REMOVE_CLUB_ADMIN':  return this._removeClubAdmin(payload, db, userId);
       }
     } catch (err) {
       return createSkillResult({
@@ -185,7 +191,6 @@ export class ClubsSpecialist extends Skill {
 
     if (orgId) query = query.eq('org_id', orgId);
     if (nextToken) {
-      // Simple cursor: decode base64 offset
       try {
         const offset = parseInt(Buffer.from(nextToken, 'base64').toString(), 10);
         query = query.range(offset, offset + limit - 1);
@@ -199,6 +204,25 @@ export class ClubsSpecialist extends Skill {
     const { data: clubs, error } = await query;
     if (error) {
       return createSkillResult({ success: false, errorCode: 'GET_CLUBS_FAILED', errorMessage: error.message });
+    }
+
+    // Contar jugadores activos para todos los clubes en una sola query adicional
+    if (clubs.length > 0) {
+      const clubIds = clubs.map(c => c.id);
+      const { data: rosters } = await db
+        .from('lg_club_rosters')
+        .select('club_id')
+        .in('club_id', clubIds)
+        .eq('status', 'ACTIVE');
+
+      const countByClub = {};
+      (rosters || []).forEach(r => {
+        countByClub[r.club_id] = (countByClub[r.club_id] || 0) + 1;
+      });
+
+      clubs.forEach(c => {
+        c.active_players_count = countByClub[c.id] || 0;
+      });
     }
 
     const hasMore = clubs.length === limit;
@@ -343,5 +367,93 @@ export class ClubsSpecialist extends Skill {
     if (error) return createSkillResult({ success: false, errorCode: 'UPDATE_ROSTER_FAILED', errorMessage: error.message });
 
     return createSkillResult({ success: true, data: { roster } });
+  }
+
+  // ── Admin-Club ──────────────────────────────────────────────────────────────
+
+  async _inviteClubAdmin({ clubId, email }, db, requestingUserId) {
+    // Solo org ADMIN puede invitar
+    const { data: club } = await db.from('lg_clubs').select('org_id, name').eq('id', clubId).single();
+    if (!club) return createSkillResult({ success: false, errorCode: 'CLUB_NOT_FOUND', errorMessage: 'Club no encontrado' });
+
+    const { data: admin } = await db
+      .from('lg_org_users').select('role')
+      .eq('user_id', requestingUserId).eq('org_id', club.org_id).maybeSingle();
+
+    if (!admin || admin.role !== 'ADMIN') {
+      return createSkillResult({ success: false, errorCode: 'FORBIDDEN', errorMessage: 'Solo el ADMIN puede invitar administradores de club' });
+    }
+
+    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+
+    // Generate token in JS — avoids pgcrypto dependency in SQL
+    const token      = crypto.randomBytes(32).toString('hex');
+    const tokenHash  = crypto.createHash('sha256').update(token).digest('hex');
+    const expiresAt  = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+
+    const { data: invite, error: inviteErr } = await db.rpc('fn_invite_club_admin', {
+      p_email:      email.toLowerCase(),
+      p_club_id:    clubId,
+      p_inviter_id: requestingUserId,
+      p_token_hash: tokenHash,
+      p_expires_at: expiresAt,
+    });
+
+    if (inviteErr) {
+      console.error('fn_invite_club_admin error:', inviteErr.message);
+      return createSkillResult({ success: false, errorCode: 'INVITE_FAILED', errorMessage: inviteErr.message });
+    }
+
+    const { is_new } = invite;
+
+    // Enviar email de invitación
+    try {
+      const link = is_new
+        ? `${frontendUrl}/accept-invite?token=${token}`   // nuevo usuario → crear contraseña
+        : `${frontendUrl}/accept-invite?token=${token}`;  // existente → confirmar acceso
+      await sendClubAdminInviteEmail(email, club.name, link, is_new);
+    } catch (mailErr) {
+      console.error('SMTP invite error:', mailErr.message);
+    }
+
+    return createSkillResult({
+      success: true,
+      data: { invited: true, isNewUser: is_new, email },
+    });
+  }
+
+  async _getClubAdmins({ clubId }, db) {
+    const { data: admins, error } = await db.rpc('fn_get_club_admins', { p_club_id: clubId });
+
+    if (error) {
+      console.error('fn_get_club_admins error:', error.message);
+      return createSkillResult({ success: false, errorCode: 'GET_ADMINS_FAILED', errorMessage: error.message });
+    }
+
+    return createSkillResult({ success: true, data: { admins: admins || [] } });
+  }
+
+  async _removeClubAdmin({ clubId, adminUserId }, db, requestingUserId) {
+    const { data: club } = await db.from('lg_clubs').select('org_id').eq('id', clubId).single();
+    if (!club) return createSkillResult({ success: false, errorCode: 'CLUB_NOT_FOUND', errorMessage: 'Club no encontrado' });
+
+    const { data: admin } = await db
+      .from('lg_org_users').select('role')
+      .eq('user_id', requestingUserId).eq('org_id', club.org_id).maybeSingle();
+
+    if (!admin || admin.role !== 'ADMIN') {
+      return createSkillResult({ success: false, errorCode: 'FORBIDDEN', errorMessage: 'Solo el ADMIN puede remover administradores de club' });
+    }
+
+    const { error } = await db
+      .from('lg_club_users')
+      .delete()
+      .eq('club_id', clubId)
+      .eq('user_id', adminUserId)
+      .eq('role', 'ADMIN_CLUB');
+
+    if (error) return createSkillResult({ success: false, errorCode: 'REMOVE_ADMIN_FAILED', errorMessage: error.message });
+
+    return createSkillResult({ success: true, data: { removed: true } });
   }
 }

@@ -10,6 +10,12 @@ provider:
     API_KEY: ${env:API_KEY}
     SUPABASE_URL_LIGA: ${env:SUPABASE_URL_LIGA}
     SUPABASE_SERVICE_ROLE_KEY_LIGA: ${env:SUPABASE_SERVICE_ROLE_KEY_LIGA}
+    FRONTEND_URL: ${env:FRONTEND_URL, 'http://localhost:5173'}
+    SMTP_HOST: ${env:SMTP_HOST, ''}
+    SMTP_PORT: ${env:SMTP_PORT, '587'}
+    SMTP_USER: ${env:SMTP_USER, ''}
+    SMTP_PASS: ${env:SMTP_PASS, ''}
+    SMTP_FROM: ${env:SMTP_FROM, ''}
 
   httpApi:
     cors:
@@ -55,3 +61,5 @@ build:
 custom:
   serverless-offline:
     disableCookieValidation: true
+    httpPort: 3000
+    lambdaPort: 3003

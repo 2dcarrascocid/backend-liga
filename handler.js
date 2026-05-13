@@ -80,6 +80,29 @@ const ROUTES = [
     },
   })),
 
+  route('POST', '/auth/forgot-password', (_pp, body) => ({
+    type: 'FORGOT_PASSWORD', domain: 'auth',
+    input: { email: body.email },
+  })),
+
+  route('POST', '/auth/reset-password', (_pp, body) => ({
+    type: 'RESET_PASSWORD', domain: 'auth',
+    input: {
+      token:       body.token,
+      newPassword: body.new_password,
+    },
+  })),
+
+  route('GET', '/auth/invite-info', (pp, _body, qs) => ({
+    type: 'INVITE_INFO', domain: 'auth',
+    input: { token: qs?.token },
+  })),
+
+  route('POST', '/auth/accept-invite', (_pp, body) => ({
+    type: 'ACCEPT_CLUB_INVITE', domain: 'auth',
+    input: { token: body.token, password: body.password },
+  })),
+
   // ── Clubs ─────────────────────────────────────────────────────────────────
 
   route('POST', '/clubs', (_pp, body) => ({
@@ -124,6 +147,21 @@ const ROUTES = [
   route('DELETE', '/clubs/{clubId}/users/{userId}', (pp) => ({
     type: 'REMOVE_CLUB_USER', domain: 'clubs',
     input: { clubId: pp.clubId, userId: pp.userId },
+  })),
+
+  route('POST', '/clubs/{clubId}/admins', (pp, body) => ({
+    type: 'INVITE_CLUB_ADMIN', domain: 'clubs',
+    input: { clubId: pp.clubId, email: body.email },
+  })),
+
+  route('GET', '/clubs/{clubId}/admins', (pp) => ({
+    type: 'GET_CLUB_ADMINS', domain: 'clubs',
+    input: { clubId: pp.clubId },
+  })),
+
+  route('DELETE', '/clubs/{clubId}/admins/{adminUserId}', (pp) => ({
+    type: 'REMOVE_CLUB_ADMIN', domain: 'clubs',
+    input: { clubId: pp.clubId, adminUserId: pp.adminUserId },
   })),
 
   route('POST', '/clubs/{clubId}/roster', (pp, body) => ({

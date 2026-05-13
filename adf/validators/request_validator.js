@@ -167,6 +167,20 @@ export const ValidationRules = {
       { field: 'orgName', required: true, type: 'string', minLength: 2, maxLength: 100 },
       { field: 'countryCode', required: true, type: 'string', minLength: 2, maxLength: 3 },
     ],
+    FORGOT_PASSWORD: [
+      { field: 'email', required: true, type: 'string', format: 'email' },
+    ],
+    RESET_PASSWORD: [
+      { field: 'token',       required: true, type: 'string', minLength: 10 },
+      { field: 'newPassword', required: true, type: 'string', minLength: 8 },
+    ],
+    INVITE_INFO: [
+      { field: 'token', required: true, type: 'string', minLength: 10 },
+    ],
+    ACCEPT_CLUB_INVITE: [
+      { field: 'token',    required: true, type: 'string', minLength: 10 },
+      { field: 'password', required: true, type: 'string', minLength: 8 },
+    ],
   },
   clubs: {
     CREATE_CLUB: [
@@ -179,6 +193,17 @@ export const ValidationRules = {
     ADD_CLUB_USER: [
       { field: 'clubId', required: true, type: 'string', format: 'uuid' },
       { field: 'userId', required: true, type: 'string', format: 'uuid' },
+    ],
+    INVITE_CLUB_ADMIN: [
+      { field: 'clubId', required: true,  type: 'string', format: 'uuid' },
+      { field: 'email',  required: true,  type: 'string', format: 'email' },
+    ],
+    GET_CLUB_ADMINS: [
+      { field: 'clubId', required: true,  type: 'string', format: 'uuid' },
+    ],
+    REMOVE_CLUB_ADMIN: [
+      { field: 'clubId',      required: true, type: 'string', format: 'uuid' },
+      { field: 'adminUserId', required: true, type: 'string', format: 'uuid' },
     ],
   },
   players: {
