@@ -1,9 +1,9 @@
 import crypto from "crypto";
 
-const SECRET = process.env.API_KEY; // usa la misma API_KEY de serverless
+const SECRET = process.env.API_KEY || "default_secret"; // usa la misma API_KEY de serverless
 
-export function encodeNext(offset, limit) {
-    const payload = JSON.stringify({ offset, limit });
+export function encodeNext(offset, limit, extra = {}) {
+    const payload = JSON.stringify({ offset, limit, ...extra });
     const base = Buffer.from(payload).toString("base64");
 
     const signature = crypto
@@ -14,7 +14,7 @@ export function encodeNext(offset, limit) {
     return `${base}.${signature}`;
 }
 
-export function decodeNext(next) {
+export function decodeNext(next, expectedContext = {}) {
     try {
         const [base, signature] = next.split(".");
 
@@ -28,8 +28,20 @@ export function decodeNext(next) {
         }
 
         const json = Buffer.from(base, "base64").toString();
-        return JSON.parse(json);
+        const payload = JSON.parse(json);
+
+        // Validar contexto (ej: orgId, clubId) si se proporcionó en la llamada a decodeNext
+        if (expectedContext && typeof expectedContext === "object") {
+            for (const [key, value] of Object.entries(expectedContext)) {
+                if (value !== undefined && payload[key] !== undefined && payload[key] !== value) {
+                    return null;
+                }
+            }
+        }
+
+        return payload;
     } catch {
         return null;
     }
 }
+

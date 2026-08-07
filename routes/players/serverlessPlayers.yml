@@ -19,6 +19,13 @@ listPlayersByOrg:
         path: /orgs/{orgId}/players
         method: get
 
+listActivePlayersByOrg:
+  handler: ${file(./routes/players/functionPlayers.yml):listPlayersByOrg.handler}
+  events:
+    - httpApi:
+        path: /orgs/{orgId}/players/active
+        method: get
+
 getPlayer:
   handler: ${file(./routes/players/functionPlayers.yml):getPlayer.handler}
   events:

@@ -40,6 +40,7 @@
 
 import { Skill } from '../contracts/skill_contract.js';
 import { createSkillResult } from '../contracts/task_schema.js';
+import { encodeNext, decodeNext } from '../../utils/pagination.js';
 
 const CAPABILITIES = [
   'CREATE_PLAYER', 'GET_PLAYER',
@@ -331,21 +332,74 @@ export class PlayersSpecialist extends Skill {
     return createSkillResult({ success: true, data: { data, next_token: newToken, total_registros: total, limit } });
   }
 
-  async _listByOrg({ orgId, limit = 50 }, db) {
-    const { data: players, error } = await db
+  async _listByOrg({ orgId, q, status = 'ACTIVE', limit = 10, next_token }, db) {
+    let offset = 0;
+    let effectiveLimit = parseInt(limit, 10) || 10;
+
+    if (next_token) {
+      const decoded = decodeNext(next_token, { orgId });
+      if (decoded) {
+        offset = decoded.offset;
+        effectiveLimit = decoded.limit;
+      } else {
+        return createSkillResult({
+          success: false,
+          errorCode: 'INVALID_NEXT_TOKEN',
+          errorMessage: 'Token de paginación inválido o perteneciente a otra organización',
+        });
+      }
+    }
+
+    let query = db
       .from('lg_players')
-      .select('*, active_roster:lg_club_rosters(*)')
-      .eq('org_id', orgId)
-      .limit(limit);
+      .select('*, active_roster:lg_club_rosters!inner(*), club:lg_clubs(*)', { count: 'exact' })
+      .eq('org_id', orgId);
 
-    if (error) return createSkillResult({ success: false, errorCode: 'LIST_PLAYERS_ORG_FAILED', errorMessage: error.message });
+    if (status) {
+      query = query.eq('active_roster.status', status);
+    }
 
-    const processed = players.map(p => ({
-      ...p,
-      active_roster: (p.active_roster ?? []).find(r => r.status === 'ACTIVE') || null,
-    }));
+    if (q) {
+      query = query.or(`first_name.ilike.%${q}%,last_name.ilike.%${q}%,rut.ilike.%${q}%`);
+    }
 
-    return createSkillResult({ success: true, data: { players: processed } });
+    query = query
+      .order('last_name', { ascending: true })
+      .range(offset, offset + effectiveLimit - 1);
+
+    const { data, error, count } = await query;
+    if (error) {
+      return createSkillResult({
+        success: false,
+        errorCode: 'LIST_PLAYERS_ORG_FAILED',
+        errorMessage: error.message,
+      });
+    }
+
+    const processed = (data || []).map(p => {
+      const clubObj = Array.isArray(p.club) ? p.club[0] : p.club;
+      return {
+        ...p,
+        club_name: clubObj?.name || null,
+        active_roster: Array.isArray(p.active_roster)
+          ? p.active_roster.find(r => r.status === status) || p.active_roster[0] || null
+          : p.active_roster || null,
+      };
+    });
+
+    const total = count ?? 0;
+    const hasMore = offset + effectiveLimit < total;
+    const newToken = hasMore ? encodeNext(offset + effectiveLimit, effectiveLimit, { orgId }) : null;
+
+    return createSkillResult({
+      success: true,
+      data: {
+        data: processed,
+        next_token: newToken,
+        total_registros: total,
+        limit: effectiveLimit,
+      },
+    });
   }
 
   async _updatePlayer({ playerId, ...updates }, db) {

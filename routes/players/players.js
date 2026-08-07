@@ -206,61 +206,55 @@ export const listPlayersByOrg = async (event) => {
   try {
     await getAuthUser(event);
     const { orgId } = event.pathParameters;
-    const { limit: limitParam, next_token } = event.queryStringParameters || {};
+    const { q, status = 'ACTIVE', limit: limitParam, next_token } = event.queryStringParameters || {};
 
     let offset = 0;
     let effectiveLimit;
 
     if (next_token) {
-      const decoded = decodeNext(next_token);
-      if (!decoded) return errorResponse('Invalid next_token', 400);
+      const decoded = decodeNext(next_token, { orgId });
+      if (!decoded) return errorResponse('Invalid next_token or organization context mismatch', 400);
       offset = decoded.offset;
       effectiveLimit = decoded.limit;
     } else {
-      effectiveLimit = parseInt(limitParam, 10) || 10;
+      const parsedLimit = parseInt(limitParam, 10);
+      effectiveLimit = (parsedLimit > 0) ? parsedLimit : 10;
     }
 
-    // List players with their ACTIVE roster (if any)
-    // "Devuelve jugadores del org con su club activo"
-    // We select from lg_players and join lg_club_rosters filtering by status=ACTIVE
-    // Note: A player might have 0 or 1 active roster.
-    
-    const query = supabaseAdmin
+    let query = supabaseAdmin
       .from('lg_players')
-      .select('*, active_roster:lg_club_rosters(*)', { count: 'exact' })
-      .eq('org_id', orgId)
-      // Filter the joined active_roster to only be 'ACTIVE'. 
-      // Supabase: .eq('lg_club_rosters.status', 'ACTIVE') ??
-      // Actually, filtering the nested resource usually requires modifiers inside select or separate filter?
-      // With Supabase (PostgREST), strictly filtering nested relation requires:
-      // select('*, lg_club_rosters!inner(*)') if we ONLY want players with active roster.
-      // But prompt says "Devuelve jugadores... con su club activo". It doesn't explicitly say "Only those with active club".
-      // But rule 4 says "No permitir jugador sin club activo". So all SHOULD have one.
-      // I'll assume left join is fine, but since all must have one, inner join is safer.
-      // But to filter specific status in the join:
-      // .select('*, active_roster:lg_club_rosters(*)')
-      // and application side filter? No, pagination breaks.
-      // Correct PostgREST syntax for filtering nested:
-      // .eq('active_roster.status', 'ACTIVE') is not directly supported in basic JS client for nested array filtering without !inner.
-      // For now, I will just fetch players and include rosters.
-      // Ideally: .select('*, active_roster:lg_club_rosters(*)')
-      // And we rely on the fact that there is only 1 ACTIVE roster.
+      .select('*, active_roster:lg_club_rosters!inner(*), club:lg_clubs(*)', { count: 'exact' })
+      .eq('org_id', orgId);
+
+    if (status) {
+      query = query.eq('active_roster.status', status);
+    }
+
+    if (q) {
+      query = query.or(`first_name.ilike.%${q}%,last_name.ilike.%${q}%,rut.ilike.%${q}%`);
+    }
+
+    query = query
       .order('last_name', { ascending: true })
       .range(offset, offset + effectiveLimit - 1);
 
     const { data, error, count } = await query;
     if (error) throw error;
-    
-    // Filter active roster in memory if needed (PostgREST returns array of rosters)
-    // But since we want to return "club actual", we should pick the active one.
-    const processedData = data.map(p => ({
-      ...p,
-      active_roster: p.active_roster ? p.active_roster.find(r => r.status === 'ACTIVE') || null : null
-    }));
+
+    const processedData = (data || []).map(p => {
+      const clubObj = Array.isArray(p.club) ? p.club[0] : p.club;
+      return {
+        ...p,
+        club_name: clubObj?.name || null,
+        active_roster: Array.isArray(p.active_roster)
+          ? p.active_roster.find(r => r.status === status) || p.active_roster[0] || null
+          : p.active_roster || null
+      };
+    });
 
     const total = count || 0;
     const hasMore = offset + effectiveLimit < total;
-    const newNextToken = hasMore ? encodeNext(offset + effectiveLimit, effectiveLimit) : null;
+    const newNextToken = hasMore ? encodeNext(offset + effectiveLimit, effectiveLimit, { orgId }) : null;
 
     return successResponse({
       data: processedData,
@@ -274,6 +268,7 @@ export const listPlayersByOrg = async (event) => {
     return errorResponse(error.message, 500);
   }
 };
+
 
 // GET /players/{playerId}
 export const getPlayer = async (event) => {

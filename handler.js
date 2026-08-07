@@ -227,7 +227,24 @@ const ROUTES = [
 
   route('GET', '/orgs/{orgId}/players', (pp, _body, qs) => ({
     type: 'LIST_PLAYERS_BY_ORG', domain: 'players',
-    input: { orgId: pp.orgId, limit: qs.limit ? parseInt(qs.limit, 10) : 50 },
+    input: {
+      orgId:      pp.orgId,
+      q:          qs.q,
+      status:     qs.status ?? 'ACTIVE',
+      limit:      qs.limit ? parseInt(qs.limit, 10) : 10,
+      next_token: qs.next_token,
+    },
+  })),
+
+  route('GET', '/orgs/{orgId}/players/active', (pp, _body, qs) => ({
+    type: 'LIST_PLAYERS_BY_ORG', domain: 'players',
+    input: {
+      orgId:      pp.orgId,
+      q:          qs.q,
+      status:     'ACTIVE',
+      limit:      qs.limit ? parseInt(qs.limit, 10) : 10,
+      next_token: qs.next_token,
+    },
   })),
 
   route('GET', '/players/{playerId}', (pp) => ({
