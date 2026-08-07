@@ -242,13 +242,17 @@ export const listPlayersByOrg = async (event) => {
     if (error) throw error;
 
     const processedData = (data || []).map(p => {
-      const clubObj = Array.isArray(p.club) ? p.club[0] : p.club;
+      const { active_roster, club, ...playerData } = p;
+      const clubObj = Array.isArray(club) ? club[0] : club;
+      const rosterObj = Array.isArray(active_roster)
+        ? active_roster.find(r => r.status === status) || active_roster[0]
+        : active_roster;
+
       return {
-        ...p,
+        ...playerData,
         club_name: clubObj?.name || null,
-        active_roster: Array.isArray(p.active_roster)
-          ? p.active_roster.find(r => r.status === status) || p.active_roster[0] || null
-          : p.active_roster || null
+        club_folio: rosterObj?.club_folio ?? p.club_folio ?? null,
+        status: rosterObj?.status || status || 'ACTIVE'
       };
     });
 
