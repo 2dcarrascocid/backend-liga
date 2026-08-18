@@ -242,4 +242,159 @@ export const ValidationRules = {
       { field: 'loanId', required: true, type: 'string', format: 'uuid' },
     ],
   },
+  referees: {
+    CREATE_REFEREE: [
+      { field: 'orgId', required: true, type: 'string', format: 'uuid' },
+      { field: 'fullName', required: true, type: 'string', minLength: 2, maxLength: 150 },
+    ],
+    UPDATE_REFEREE: [
+      { field: 'refereeId', required: true, type: 'string', format: 'uuid' },
+    ],
+    DELETE_REFEREE: [
+      { field: 'refereeId', required: true, type: 'string', format: 'uuid' },
+    ],
+    GET_REFEREE: [
+      { field: 'refereeId', required: true, type: 'string', format: 'uuid' },
+    ],
+    LIST_REFEREES: [
+      { field: 'orgId', required: true, type: 'string', format: 'uuid' },
+    ],
+  },
+  venues: {
+    CREATE_VENUE: [
+      { field: 'orgId', required: true, type: 'string', format: 'uuid' },
+      { field: 'name', required: true, type: 'string', minLength: 2, maxLength: 150 },
+    ],
+    UPDATE_VENUE: [
+      { field: 'venueId', required: true, type: 'string', format: 'uuid' },
+    ],
+    DELETE_VENUE: [
+      { field: 'venueId', required: true, type: 'string', format: 'uuid' },
+    ],
+    GET_VENUE: [
+      { field: 'venueId', required: true, type: 'string', format: 'uuid' },
+    ],
+    LIST_VENUES: [
+      { field: 'orgId', required: true, type: 'string', format: 'uuid' },
+    ],
+  },
+  venue_scheduling: {
+    LIST_AVAILABILITY: [
+      { field: 'venueId', required: true, type: 'string', format: 'uuid' },
+    ],
+    CREATE_AVAILABILITY: [
+      { field: 'venueId', required: true, type: 'string', format: 'uuid' },
+      { field: 'diaSemana', required: true, type: 'number', min: 0, max: 6 },
+      { field: 'horaApertura', required: true, type: 'string' },
+      { field: 'horaCierre', required: true, type: 'string' },
+    ],
+    DELETE_AVAILABILITY: [
+      { field: 'availabilityId', required: true, type: 'string', format: 'uuid' },
+    ],
+    LIST_BOOKINGS: [
+      { field: 'venueId', required: true, type: 'string', format: 'uuid' },
+    ],
+    CREATE_BOOKING: [
+      { field: 'venueId', required: true, type: 'string', format: 'uuid' },
+      { field: 'fecha', required: true, type: 'string', format: 'date' },
+      { field: 'horaInicio', required: true, type: 'string' },
+      { field: 'horaFin', required: true, type: 'string' },
+    ],
+    DELETE_BOOKING: [
+      { field: 'bookingId', required: true, type: 'string', format: 'uuid' },
+    ],
+  },
+  tournaments: {
+    CREATE_TOURNAMENT: [
+      { field: 'orgId', required: true, type: 'string', format: 'uuid' },
+      { field: 'name', required: true, type: 'string', minLength: 2, maxLength: 150 },
+      { field: 'format', required: true, type: 'string', enum: ['ROUND_ROBIN', 'KNOCKOUT', 'GROUPS_KNOCKOUT'] },
+    ],
+    UPDATE_TOURNAMENT: [
+      { field: 'tournamentId', required: true, type: 'string', format: 'uuid' },
+    ],
+    DELETE_TOURNAMENT: [
+      { field: 'tournamentId', required: true, type: 'string', format: 'uuid' },
+    ],
+    GET_TOURNAMENT: [
+      { field: 'tournamentId', required: true, type: 'string', format: 'uuid' },
+    ],
+    LIST_TOURNAMENTS: [
+      { field: 'orgId', required: true, type: 'string', format: 'uuid' },
+    ],
+    REGISTER_TEAM: [
+      { field: 'tournamentId', required: true, type: 'string', format: 'uuid' },
+      { field: 'seriesId', required: true, type: 'string', format: 'uuid' },
+    ],
+    GENERATE_FIXTURE: [
+      { field: 'tournamentId', required: true, type: 'string', format: 'uuid' },
+    ],
+    GET_STANDINGS: [
+      { field: 'tournamentId', required: true, type: 'string', format: 'uuid' },
+    ],
+  },
+  matches: {
+    GET_MATCH: [
+      { field: 'matchId', required: true, type: 'string', format: 'uuid' },
+    ],
+    UPDATE_MATCH_RESULT: [
+      { field: 'matchId', required: true, type: 'string', format: 'uuid' },
+    ],
+    UPDATE_MATCH_LOGISTICS: [
+      { field: 'matchId', required: true, type: 'string', format: 'uuid' },
+    ],
+    ADD_MATCH_EVENT: [
+      { field: 'matchId', required: true, type: 'string', format: 'uuid' },
+      { field: 'seriesId', required: true, type: 'string', format: 'uuid' },
+      { field: 'eventType', required: true, type: 'string', enum: ['GOAL', 'OWN_GOAL', 'YELLOW_CARD', 'RED_CARD', 'WARNING'] },
+    ],
+    LIST_MATCHES: [
+      { field: 'tournamentId', required: true, type: 'string', format: 'uuid' },
+    ],
+  },
+  tournament_costs: {
+    CREATE_MATCHDAY_COST: [
+      { field: 'matchdayId', required: true, type: 'string', format: 'uuid' },
+      { field: 'concept', required: true, type: 'string', minLength: 2 },
+    ],
+    CREATE_MATCH_COST: [
+      { field: 'matchId', required: true, type: 'string', format: 'uuid' },
+      { field: 'concept', required: true, type: 'string', minLength: 2 },
+    ],
+    GET_COSTS_SUMMARY: [
+      { field: 'tournamentId', required: true, type: 'string', format: 'uuid' },
+    ],
+  },
+  club_series: {
+    CREATE_SERIES: [
+      { field: 'clubId', required: true, type: 'string', format: 'uuid' },
+      { field: 'name', required: true, type: 'string', minLength: 1, maxLength: 150 },
+      { field: 'description', required: false, type: 'string', maxLength: 500 },
+      { field: 'minAge', required: false, type: 'number', min: 1, max: 100 },
+      { field: 'ageRestriction', required: false, type: 'boolean' },
+    ],
+    UPDATE_SERIES: [
+      { field: 'seriesId', required: true, type: 'string', format: 'uuid' },
+      { field: 'description', required: false, type: 'string', maxLength: 500 },
+      { field: 'minAge', required: false, type: 'number', min: 1, max: 100 },
+      { field: 'ageRestriction', required: false, type: 'boolean' },
+    ],
+    DELETE_SERIES: [
+      { field: 'seriesId', required: true, type: 'string', format: 'uuid' },
+    ],
+    GET_SERIES: [
+      { field: 'seriesId', required: true, type: 'string', format: 'uuid' },
+    ],
+    ASSIGN_PLAYER: [
+      { field: 'seriesId', required: true, type: 'string', format: 'uuid' },
+      { field: 'playerId', required: true, type: 'string', format: 'uuid' },
+    ],
+    UNASSIGN_PLAYER: [
+      { field: 'seriesId', required: true, type: 'string', format: 'uuid' },
+      { field: 'playerId', required: true, type: 'string', format: 'uuid' },
+    ],
+    GET_SERIES_ROSTER: [
+      { field: 'seriesId', required: true, type: 'string', format: 'uuid' },
+    ],
+  },
 };

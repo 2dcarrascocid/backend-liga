@@ -37,6 +37,7 @@ import { Skill } from '../contracts/skill_contract.js';
 import { createSkillResult } from '../contracts/task_schema.js';
 import crypto from 'crypto';
 import { sendClubAdminInviteEmail } from '../../utils/mailer.js';
+import { assertClubAccess, getAccessibleClubIds } from './lib/club_access.js';
 
 const CAPABILITIES = [
   'CREATE_CLUB', 'GET_CLUBS', 'GET_CLUB', 'UPDATE_CLUB',
@@ -98,14 +99,14 @@ export class ClubsSpecialist extends Skill {
     try {
       switch (operation) {
         case 'CREATE_CLUB':      return this._createClub(payload, db, userId);
-        case 'GET_CLUBS':        return this._getClubs(payload, db);
-        case 'GET_CLUB':         return this._getClub(payload, db);
+        case 'GET_CLUBS':        return this._getClubs(payload, db, userId);
+        case 'GET_CLUB':         return this._getClub(payload, db, userId);
         case 'UPDATE_CLUB':      return this._updateClub(payload, db, userId);
         case 'ADD_CLUB_USER':      return this._addClubUser(payload, db, userId);
         case 'REMOVE_CLUB_USER':   return this._removeClubUser(payload, db, userId);
-        case 'ADD_ROSTER':         return this._addRoster(payload, db);
-        case 'GET_ROSTER':         return this._getRoster(payload, db);
-        case 'UPDATE_ROSTER':      return this._updateRoster(payload, db);
+        case 'ADD_ROSTER':         return this._addRoster(payload, db, userId);
+        case 'GET_ROSTER':         return this._getRoster(payload, db, userId);
+        case 'UPDATE_ROSTER':      return this._updateRoster(payload, db, userId);
         case 'INVITE_CLUB_ADMIN':  return this._inviteClubAdmin(payload, db, userId);
         case 'GET_CLUB_ADMINS':    return this._getClubAdmins(payload, db);
         case 'REMOVE_CLUB_ADMIN':  return this._removeClubAdmin(payload, db, userId);
@@ -183,13 +184,23 @@ export class ClubsSpecialist extends Skill {
     return createSkillResult({ success: true, data: { club } });
   }
 
-  async _getClubs({ orgId, limit = 20, nextToken }, db) {
+  async _getClubs({ orgId, limit = 20, nextToken }, db, userId) {
     let query = db
       .from('lg_clubs')
       .select('id, name, short_name, colors, logo_url, active, created_at')
       .order('name');
 
-    if (orgId) query = query.eq('org_id', orgId);
+    if (orgId) {
+      query = query.eq('org_id', orgId);
+
+      const accessibleIds = await getAccessibleClubIds(userId, orgId, db);
+      if (accessibleIds !== 'ALL') {
+        if (accessibleIds.length === 0) {
+          return createSkillResult({ success: true, data: { clubs: [], nextToken: null } });
+        }
+        query = query.in('id', accessibleIds);
+      }
+    }
     if (nextToken) {
       try {
         const offset = parseInt(Buffer.from(nextToken, 'base64').toString(), 10);
@@ -231,7 +242,12 @@ export class ClubsSpecialist extends Skill {
     return createSkillResult({ success: true, data: { clubs, nextToken: next } });
   }
 
-  async _getClub({ clubId }, db) {
+  async _getClub({ clubId }, db, userId) {
+    const accessError = await assertClubAccess(clubId, userId, db);
+    if (accessError) {
+      return createSkillResult({ success: false, errorCode: accessError, errorMessage: 'No tienes permisos para ver este club' });
+    }
+
     const [{ data: club, error }, { count }] = await Promise.all([
       db.from('lg_clubs').select('*').eq('id', clubId).single(),
       db.from('lg_club_rosters')
@@ -248,6 +264,11 @@ export class ClubsSpecialist extends Skill {
   }
 
   async _updateClub({ clubId, ...updates }, db, userId) {
+    const accessError = await assertClubAccess(clubId, userId, db);
+    if (accessError) {
+      return createSkillResult({ success: false, errorCode: accessError, errorMessage: 'No tienes permisos para editar este club' });
+    }
+
     const allowed = ['name', 'short_name', 'colors', 'logo_url', 'description', 'active',
                      'folio_start', 'folio_end', 'max_players'];
     const patch = Object.fromEntries(
@@ -322,7 +343,12 @@ export class ClubsSpecialist extends Skill {
     return createSkillResult({ success: true, data: { removed: true } });
   }
 
-  async _addRoster({ clubId, playerId, validFrom, validTo }, db) {
+  async _addRoster({ clubId, playerId, validFrom, validTo }, db, userId) {
+    const accessError = await assertClubAccess(clubId, userId, db);
+    if (accessError) {
+      return createSkillResult({ success: false, errorCode: accessError, errorMessage: 'No tienes permisos para modificar el roster de este club' });
+    }
+
     const { data: roster, error } = await db
       .from('lg_club_rosters')
       .insert({ club_id: clubId, player_id: playerId, status: 'ACTIVE', valid_from: validFrom, valid_to: validTo })
@@ -336,10 +362,15 @@ export class ClubsSpecialist extends Skill {
     return createSkillResult({ success: true, data: { roster } });
   }
 
-  async _getRoster({ clubId, limit = 20, nextToken, status }, db) {
+  async _getRoster({ clubId, limit = 20, nextToken, status }, db, userId) {
+    const accessError = await assertClubAccess(clubId, userId, db);
+    if (accessError) {
+      return createSkillResult({ success: false, errorCode: accessError, errorMessage: 'No tienes permisos para ver el roster de este club' });
+    }
+
     let query = db
       .from('lg_club_rosters')
-      .select('*, lg_players(id, first_name, last_name, national_id, position, jersey_number)')
+      .select('*, player:lg_players(id, first_name, last_name, national_id, position, jersey_number, birth_date)')
       .eq('club_id', clubId)
       .order('club_folio');
 
@@ -352,7 +383,17 @@ export class ClubsSpecialist extends Skill {
     return createSkillResult({ success: true, data: { roster } });
   }
 
-  async _updateRoster({ rosterId, status, validTo }, db) {
+  async _updateRoster({ rosterId, status, validTo }, db, userId) {
+    const { data: existingRoster } = await db.from('lg_club_rosters').select('club_id').eq('id', rosterId).maybeSingle();
+    if (!existingRoster) {
+      return createSkillResult({ success: false, errorCode: 'ROSTER_NOT_FOUND', errorMessage: 'Roster no encontrado' });
+    }
+
+    const accessError = await assertClubAccess(existingRoster.club_id, userId, db);
+    if (accessError) {
+      return createSkillResult({ success: false, errorCode: accessError, errorMessage: 'No tienes permisos para modificar el roster de este club' });
+    }
+
     const patch = {};
     if (status !== undefined) patch.status = status;
     if (validTo !== undefined) patch.valid_to = validTo;
@@ -382,6 +423,48 @@ export class ClubsSpecialist extends Skill {
 
     if (!admin || admin.role !== 'ADMIN') {
       return createSkillResult({ success: false, errorCode: 'FORBIDDEN', errorMessage: 'Solo el ADMIN puede invitar administradores de club' });
+    }
+
+    const normalizedEmail = email.toLowerCase();
+
+    // Regla: un email solo puede ser ADMIN_CLUB de un club a la vez.
+    const { data: existingUser } = await db.schema('auth').from('users').select('id').eq('email', normalizedEmail).maybeSingle();
+
+    if (existingUser) {
+      const { data: elsewhereAdmin } = await db
+        .from('lg_club_users')
+        .select('club_id')
+        .eq('user_id', existingUser.id)
+        .eq('role', 'ADMIN_CLUB')
+        .neq('club_id', clubId)
+        .maybeSingle();
+
+      if (elsewhereAdmin) {
+        const { data: otherClub } = await db.from('lg_clubs').select('name').eq('id', elsewhereAdmin.club_id).maybeSingle();
+        return createSkillResult({
+          success: false,
+          errorCode: 'ALREADY_CLUB_ADMIN_ELSEWHERE',
+          errorMessage: `Este email ya es administrador del club "${otherClub?.name || 'otro club'}". Un administrador solo puede pertenecer a un club.`,
+        });
+      }
+    }
+
+    const { data: pendingElsewhere } = await db
+      .from('lg_club_invites')
+      .select('club_id')
+      .eq('email', normalizedEmail)
+      .is('accepted_at', null)
+      .neq('club_id', clubId)
+      .gt('expires_at', new Date().toISOString())
+      .maybeSingle();
+
+    if (pendingElsewhere) {
+      const { data: otherClub } = await db.from('lg_clubs').select('name').eq('id', pendingElsewhere.club_id).maybeSingle();
+      return createSkillResult({
+        success: false,
+        errorCode: 'PENDING_INVITE_ELSEWHERE',
+        errorMessage: `Ya existe una invitación pendiente para este email en el club "${otherClub?.name || 'otro club'}".`,
+      });
     }
 
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';

@@ -1,60 +1,35 @@
 /**
  * ADF - Transfers Specialist (Specialists Layer)
  *
- * Ejecuta operaciones del dominio de traspasos de jugadores entre clubes.
- * Maneja el ciclo de vida completo: ENVIADO → ACEPTADO / RECHAZADO, cancelación.
- *
- * DO:
- *   - Operar sobre lg_transfers y lg_club_rosters
- *   - En ACCEPT_TRANSFER:
- *       1. Desactivar roster origen (libera el folio del club origen)
- *       2. Buscar primer folio libre en club destino (solo entre rosters ACTIVE)
- *       3. Crear roster destino con folio asignado
- *       4. Actualizar club_folio y club_id en lg_players
- *   - En CREATE_TRANSFER: validar que el jugador esté ACTIVE en el club origen
- *   - En CREATE_TRANSFER: verificar que no exista otro traspaso ENVIADO para el mismo jugador
- *   - Solo el club destino puede ACCEPT/REJECT; solo el club origen puede CANCEL
- *
- * DON'T:
- *   - No procesar traspasos en estado distinto de ENVIADO en accept/reject/cancel
- *   - No permitir traspaso al mismo club
- *   - No crear roster destino sin folio asignado
- *   - No lanzar excepciones no controladas
- *
- * Reglas de folio en ACCEPT:
- *   - Los rosters INACTIVE no cuentan como folio ocupado
- *   - Si el club destino no tiene folios disponibles → error antes de cualquier cambio
- *   - El folio asignado se guarda en lg_club_rosters.club_folio y en lg_players.club_folio
+ * Módulo de Transferencias de Jugadores y KPIs para Fair Play Chile.
+ * Maneja el ciclo de vida completo: PENDING / ENVIADO → APPROVED / ACEPTADO | REJECTED / RECHAZADO | CANCELLED / CANCELADO.
+ * Soporta paginación por token para listado y cálculo de KPIs globales y por club.
  *
  * Capabilities:
- *   LIST_TRANSFERS | CREATE_TRANSFER | ACCEPT_TRANSFER | REJECT_TRANSFER | CANCEL_TRANSFER
- *
- * Checklist:
- *   [x] ¿CREATE valida jugador ACTIVE en club origen?
- *   [x] ¿CREATE verifica que no haya traspaso ENVIADO pendiente?
- *   [x] ¿ACCEPT verifica cupo y folios disponibles en club destino antes de modificar?
- *   [x] ¿ACCEPT desactiva roster origen (libera folio)?
- *   [x] ¿ACCEPT crea roster destino con folio asignado?
- *   [x] ¿ACCEPT actualiza club_folio y club_id en lg_players?
- *   [x] ¿ACCEPT revierte desactivación si falla la creación del roster destino?
- *   [x] ¿ACCEPT/REJECT solo aplica si to_club_id coincide?
- *   [x] ¿CANCEL solo aplica si from_club_id coincide y status = ENVIADO?
+ *   LIST_TRANSFERS | GET_TRANSFER | CREATE_TRANSFER | UPDATE_TRANSFER_STATUS |
+ *   ACCEPT_TRANSFER | REJECT_TRANSFER | CANCEL_TRANSFER |
+ *   GET_KPIS_SUMMARY | GET_KPIS_CLUB
  */
 
 import { Skill } from '../contracts/skill_contract.js';
 import { createSkillResult } from '../contracts/task_schema.js';
+import { encodeNext, decodeNext } from '../../utils/pagination.js';
 
 const CAPABILITIES = [
   'LIST_TRANSFERS',
+  'GET_TRANSFER',
   'CREATE_TRANSFER',
+  'UPDATE_TRANSFER_STATUS',
   'ACCEPT_TRANSFER',
   'REJECT_TRANSFER',
   'CANCEL_TRANSFER',
+  'GET_KPIS_SUMMARY',
+  'GET_KPIS_CLUB',
 ];
 
 export class TransfersSpecialist extends Skill {
   constructor() {
-    super('transfers_specialist', '1.1.0');
+    super('transfers_specialist', '2.0.0');
     this.domain = 'transfers';
     this.capabilities = CAPABILITIES;
 
@@ -66,40 +41,19 @@ export class TransfersSpecialist extends Skill {
         { name: 'userId',    required: false, type: 'string' },
       ],
       output: [
-        { name: 'transfer',      type: 'object' },
-        { name: 'outgoing',      type: 'array'  },
-        { name: 'incoming',      type: 'array'  },
-        { name: 'assignedFolio', type: 'number' },
-      ],
-      rules: {
-        do: [
-          'Separar traspasos en outgoing (from_club) e incoming (to_club) en LIST',
-          'Validar jugador ACTIVE en club origen antes de crear traspaso',
-          'Verificar traspaso pendiente antes de crear uno nuevo',
-          'En ACCEPT: verificar cupo y folios libres en destino ANTES de modificar datos',
-          'En ACCEPT: desactivar roster origen, crear roster destino con folio, actualizar lg_players',
-          'En ACCEPT: revertir si falla la creación del roster destino',
-          'Solo club destino puede aceptar/rechazar; solo club origen puede cancelar',
-        ],
-        dont: [
-          'No procesar traspasos que no estén en estado ENVIADO',
-          'No permitir traspaso al mismo club',
-          'No crear roster destino sin folio asignado',
-        ],
-      },
-      checklist: [
-        'CREATE valida roster ACTIVE en from_club',
-        'CREATE verifica que no haya traspaso ENVIADO duplicado',
-        'ACCEPT verifica cupo y folios disponibles antes de modificar',
-        'ACCEPT libera folio en origen (roster INACTIVE) y asigna folio en destino',
-        'ACCEPT actualiza club_folio y club_id en lg_players',
-        'REJECT y CANCEL solo aplican a estado ENVIADO',
+        { name: 'transfer',       type: 'object' },
+        { name: 'data',           type: 'array'  },
+        { name: 'next_token',     type: 'string' },
+        { name: 'total_registros',type: 'number' },
+        { name: 'limit',          type: 'number' },
+        { name: 'summary',        type: 'object' },
+        { name: 'club_kpis',      type: 'object' },
       ],
     };
   }
 
   async execute(task) {
-    const { operation, payload, db } = task.input;
+    const { operation, payload, db, userId } = task.input;
 
     if (!this.capabilities.includes(operation)) {
       return createSkillResult({
@@ -111,11 +65,15 @@ export class TransfersSpecialist extends Skill {
 
     try {
       switch (operation) {
-        case 'LIST_TRANSFERS':   return this._listTransfers(payload, db);
-        case 'CREATE_TRANSFER':  return this._createTransfer(payload, db);
-        case 'ACCEPT_TRANSFER':  return this._acceptTransfer(payload, db);
-        case 'REJECT_TRANSFER':  return this._rejectTransfer(payload, db);
-        case 'CANCEL_TRANSFER':  return this._cancelTransfer(payload, db);
+        case 'LIST_TRANSFERS':          return this._listTransfers(payload, db);
+        case 'GET_TRANSFER':            return this._getTransfer(payload, db);
+        case 'CREATE_TRANSFER':         return this._createTransfer(payload, db, userId);
+        case 'UPDATE_TRANSFER_STATUS':  return this._updateTransferStatus(payload, db, userId);
+        case 'ACCEPT_TRANSFER':         return this._updateTransferStatus({ ...payload, status: 'APPROVED' }, db, userId);
+        case 'REJECT_TRANSFER':         return this._updateTransferStatus({ ...payload, status: 'REJECTED' }, db, userId);
+        case 'CANCEL_TRANSFER':         return this._updateTransferStatus({ ...payload, status: 'CANCELLED' }, db, userId);
+        case 'GET_KPIS_SUMMARY':        return this._getKpisSummary(payload, db);
+        case 'GET_KPIS_CLUB':           return this._getKpisClub(payload, db);
       }
     } catch (err) {
       return createSkillResult({
@@ -126,7 +84,7 @@ export class TransfersSpecialist extends Skill {
     }
   }
 
-  // ── Helper: folio libre en un club ───────────────────────────────────────
+  // ── Helper: Obtener folio libre en club destino ─────────────────────────────
 
   async _getAvailableFolio(clubId, db) {
     const { data: club, error: clubErr } = await db
@@ -141,7 +99,6 @@ export class TransfersSpecialist extends Skill {
     const folioEnd   = club.folio_end   ?? 70;
     const maxPlayers = club.max_players ?? 70;
 
-    // Verificar cupo en destino
     const { count: activeCount } = await db
       .from('lg_club_rosters')
       .select('id', { count: 'exact', head: true })
@@ -152,7 +109,6 @@ export class TransfersSpecialist extends Skill {
       return { error: { code: 'ROSTER_FULL', message: `El club destino está lleno (máx. ${maxPlayers} jugadores activos)` } };
     }
 
-    // Folios ocupados (solo ACTIVE — los INACTIVE quedan libres)
     const { data: usedRows } = await db
       .from('lg_club_rosters')
       .select('club_folio')
@@ -174,79 +130,181 @@ export class TransfersSpecialist extends Skill {
     return { assignedFolio };
   }
 
-  // ── Operations ───────────────────────────────────────────────────────────
+  // ── 1. LIST_TRANSFERS (Token-based pagination & filters) ───────────────────
 
-  async _listTransfers({ clubId }, db) {
-    const { data, error } = await db
+  async _listTransfers({ playerId, originClubId, destinationClubId, status, limit: limitRaw, nextToken, clubId }, db) {
+    const limit = Math.min(Math.max(parseInt(limitRaw || 10, 10), 1), 100);
+
+    let offset = 0;
+    if (nextToken) {
+      const decoded = decodeNext(nextToken);
+      if (decoded && typeof decoded.offset === 'number') {
+        offset = decoded.offset;
+      }
+    }
+
+    let query = db
       .from('lg_transfers')
       .select(`
         *,
-        player:lg_players(id, first_name, last_name, rut, birth_date, photo_url),
-        from_club:lg_clubs!from_club_id(id, name),
-        to_club:lg_clubs!to_club_id(id, name)
-      `)
-      .or(`from_club_id.eq.${clubId},to_club_id.eq.${clubId}`)
-      .order('created_at', { ascending: false });
+        player:lg_players(id, first_name, last_name, rut, birth_date, photo_url, position),
+        origin_club:lg_clubs!from_club_id(id, name, short_name, logo_url),
+        destination_club:lg_clubs!to_club_id(id, name, short_name, logo_url)
+      `, { count: 'exact' });
+
+    if (playerId) {
+      query = query.eq('player_id', playerId);
+    }
+    if (originClubId) {
+      query = query.eq('from_club_id', originClubId);
+    }
+    if (destinationClubId) {
+      query = query.eq('to_club_id', destinationClubId);
+    }
+    if (clubId && !originClubId && !destinationClubId) {
+      query = query.or(`from_club_id.eq.${clubId},to_club_id.eq.${clubId}`);
+    }
+    if (status) {
+      // Mapear equivalencias PENDING/ENVIADO, APPROVED/ACEPTADO, REJECTED/RECHAZADO, CANCELLED/CANCELADO
+      const upperStatus = status.toUpperCase();
+      if (upperStatus === 'PENDING' || upperStatus === 'ENVIADO') {
+        query = query.in('status', ['PENDING', 'ENVIADO']);
+      } else if (upperStatus === 'APPROVED' || upperStatus === 'ACEPTADO') {
+        query = query.in('status', ['APPROVED', 'ACEPTADO']);
+      } else if (upperStatus === 'REJECTED' || upperStatus === 'RECHAZADO') {
+        query = query.in('status', ['REJECTED', 'RECHAZADO']);
+      } else if (upperStatus === 'CANCELLED' || upperStatus === 'CANCELADO') {
+        query = query.in('status', ['CANCELLED', 'CANCELADO']);
+      } else {
+        query = query.eq('status', status);
+      }
+    }
+
+    query = query.order('created_at', { ascending: false }).range(offset, offset + limit - 1);
+
+    const { data, count, error } = await query;
 
     if (error) {
       return createSkillResult({ success: false, errorCode: 'LIST_TRANSFERS_FAILED', errorMessage: error.message });
     }
 
-    const outgoing = data.filter(t => t.from_club_id === clubId);
-    const incoming = data.filter(t => t.to_club_id   === clubId);
+    const totalCount = count ?? 0;
+    const next_token = (offset + limit < totalCount) ? encodeNext(offset + limit, limit) : null;
 
-    return createSkillResult({ success: true, data: { outgoing, incoming } });
+    return createSkillResult({
+      success: true,
+      data: {
+        data: data ?? [],
+        next_token,
+        total_registros: totalCount,
+        limit,
+      },
+    });
   }
 
-  async _createTransfer({ clubId, orgId, playerId, toClubId, notes }, db) {
-    if (!playerId || !toClubId) {
-      return createSkillResult({ success: false, errorCode: 'MISSING_FIELDS', errorMessage: 'player_id y to_club_id son requeridos' });
+  // ── 2. GET_TRANSFER ────────────────────────────────────────────────────────
+
+  async _getTransfer({ transferId }, db) {
+    const { data, error } = await db
+      .from('lg_transfers')
+      .select(`
+        *,
+        player:lg_players(id, first_name, last_name, rut, birth_date, photo_url, position, club_id, club_folio),
+        origin_club:lg_clubs!from_club_id(id, name, short_name, logo_url),
+        destination_club:lg_clubs!to_club_id(id, name, short_name, logo_url)
+      `)
+      .eq('id', transferId)
+      .single();
+
+    if (error || !data) {
+      return createSkillResult({ success: false, errorCode: 'TRANSFER_NOT_FOUND', errorMessage: 'Transferencia no encontrada' });
     }
 
-    if (toClubId === clubId) {
-      return createSkillResult({ success: false, errorCode: 'SAME_CLUB', errorMessage: 'El club destino debe ser distinto al club origen' });
+    return createSkillResult({ success: true, data: { transfer: data } });
+  }
+
+  // ── 3. CREATE_TRANSFER ─────────────────────────────────────────────────────
+
+  async _createTransfer({ playerId, originClubId, destinationClubId, fee, notes, transferDate, requestedBy }, db, userId) {
+    const fromClubId = originClubId;
+    const toClubId   = destinationClubId;
+
+    if (!playerId || !fromClubId || !toClubId) {
+      return createSkillResult({
+        success: false,
+        errorCode: 'MISSING_FIELDS',
+        errorMessage: 'player_id (o playerId), origin_club_id y destination_club_id son requeridos',
+      });
+    }
+
+    if (fromClubId === toClubId) {
+      return createSkillResult({
+        success: false,
+        errorCode: 'SAME_CLUB',
+        errorMessage: 'El club destino debe ser distinto al club origen',
+      });
     }
 
     // Verificar que el jugador esté activo en el club origen
     const { data: roster, error: rosterError } = await db
       .from('lg_club_rosters')
       .select('id, status')
-      .eq('club_id', clubId)
+      .eq('club_id', fromClubId)
       .eq('player_id', playerId)
       .eq('status', 'ACTIVE')
-      .single();
+      .maybeSingle();
 
     if (rosterError || !roster) {
-      return createSkillResult({ success: false, errorCode: 'PLAYER_NOT_IN_CLUB', errorMessage: 'El jugador no está activo en este club' });
+      return createSkillResult({
+        success: false,
+        errorCode: 'PLAYER_NOT_IN_CLUB',
+        errorMessage: 'El jugador no tiene un roster activo en el club origen',
+      });
     }
 
-    // Verificar que no haya un traspaso pendiente
+    // Verificar que no haya un traspaso pendiente para el jugador
     const { data: pending } = await db
       .from('lg_transfers')
       .select('id')
       .eq('player_id', playerId)
-      .eq('status', 'ENVIADO')
+      .in('status', ['PENDING', 'ENVIADO'])
       .maybeSingle();
 
     if (pending) {
-      return createSkillResult({ success: false, errorCode: 'TRANSFER_PENDING', errorMessage: 'El jugador ya tiene un traspaso pendiente' });
+      return createSkillResult({
+        success: false,
+        errorCode: 'TRANSFER_PENDING',
+        errorMessage: 'El jugador ya posee una solicitud de transferencia pendiente',
+      });
     }
+
+    // Obtener org_id del club origen
+    const { data: club } = await db
+      .from('lg_clubs')
+      .select('org_id')
+      .eq('id', fromClubId)
+      .single();
+
+    const numericFee = fee ? parseFloat(fee) : 0.00;
 
     const { data: transfer, error } = await db
       .from('lg_transfers')
       .insert({
-        org_id:       orgId,
-        player_id:    playerId,
-        from_club_id: clubId,
-        to_club_id:   toClubId,
-        status:       'ENVIADO',
-        notes:        notes ?? null,
+        org_id:        club?.org_id ?? null,
+        player_id:     playerId,
+        from_club_id:  fromClubId,
+        to_club_id:    toClubId,
+        transfer_date: transferDate ? new Date(transferDate).toISOString() : new Date().toISOString(),
+        fee:           numericFee,
+        status:        'PENDING',
+        requested_by:  requestedBy ?? userId ?? null,
+        notes:         notes ?? null,
       })
       .select(`
         *,
         player:lg_players(id, first_name, last_name, rut),
-        from_club:lg_clubs!from_club_id(id, name),
-        to_club:lg_clubs!to_club_id(id, name)
+        origin_club:lg_clubs!from_club_id(id, name),
+        destination_club:lg_clubs!to_club_id(id, name)
       `)
       .single();
 
@@ -257,111 +315,272 @@ export class TransfersSpecialist extends Skill {
     return createSkillResult({ success: true, data: { transfer } });
   }
 
-  async _acceptTransfer({ clubId, transferId }, db) {
-    // Cargar el traspaso (solo club destino puede aceptar)
-    const { data: transfer, error: fetchError } = await db
+  // ── 4. UPDATE_TRANSFER_STATUS (APPROVED, REJECTED, CANCELLED) ──────────────
+
+  async _updateTransferStatus({ transferId, status, approvedBy, notes }, db, userId) {
+    if (!transferId || !status) {
+      return createSkillResult({ success: false, errorCode: 'MISSING_FIELDS', errorMessage: 'transferId y status son requeridos' });
+    }
+
+    const normStatus = status.toUpperCase();
+    const isApprove = normStatus === 'APPROVED' || normStatus === 'ACEPTADO';
+    const isReject  = normStatus === 'REJECTED' || normStatus === 'RECHAZADO';
+    const isCancel  = normStatus === 'CANCELLED' || normStatus === 'CANCELADO';
+
+    if (!isApprove && !isReject && !isCancel) {
+      return createSkillResult({
+        success: false,
+        errorCode: 'INVALID_STATUS',
+        errorMessage: 'Estado no válido. Use APPROVED, REJECTED o CANCELLED',
+      });
+    }
+
+    // Obtener la transferencia actual
+    const { data: transfer, error: fetchErr } = await db
       .from('lg_transfers')
       .select('*')
       .eq('id', transferId)
-      .eq('to_club_id', clubId)
-      .eq('status', 'ENVIADO')
       .single();
 
-    if (fetchError || !transfer) {
-      return createSkillResult({ success: false, errorCode: 'TRANSFER_NOT_FOUND', errorMessage: 'Traspaso no encontrado o no está pendiente' });
+    if (fetchErr || !transfer) {
+      return createSkillResult({ success: false, errorCode: 'TRANSFER_NOT_FOUND', errorMessage: 'Transferencia no encontrada' });
     }
 
-    // Verificar folio disponible en destino ANTES de modificar nada
-    const folioResult = await this._getAvailableFolio(transfer.to_club_id, db);
-    if (folioResult.error) {
-      return createSkillResult({ success: false, errorCode: folioResult.error.code, errorMessage: folioResult.error.message });
-    }
-    const { assignedFolio } = folioResult;
-
-    // 1. Desactivar roster en club origen (folio queda libre)
-    const { error: deactivateError } = await db
-      .from('lg_club_rosters')
-      .update({ status: 'INACTIVE', valid_to: new Date().toISOString() })
-      .eq('player_id', transfer.player_id)
-      .eq('club_id', transfer.from_club_id)
-      .eq('status', 'ACTIVE');
-
-    if (deactivateError) {
-      return createSkillResult({ success: false, errorCode: 'DEACTIVATE_ROSTER_FAILED', errorMessage: deactivateError.message });
-    }
-
-    // 2. Crear roster activo en club destino con folio asignado
-    const { error: rosterError } = await db
-      .from('lg_club_rosters')
-      .insert({
-        club_id:    transfer.to_club_id,
-        player_id:  transfer.player_id,
-        status:     'ACTIVE',
-        valid_from: new Date().toISOString(),
-        club_folio: assignedFolio,
+    if (transfer.status !== 'PENDING' && transfer.status !== 'ENVIADO') {
+      return createSkillResult({
+        success: false,
+        errorCode: 'TRANSFER_ALREADY_PROCESSED',
+        errorMessage: `La transferencia ya se encuentra en estado ${transfer.status}`,
       });
+    }
 
-    if (rosterError) {
-      // Revertir desactivación
-      await db
+    const targetStatus = isApprove ? 'APPROVED' : (isReject ? 'REJECTED' : 'CANCELLED');
+    const approver = approvedBy ?? userId ?? null;
+
+    if (isApprove) {
+      // 1. Obtener folio disponible en club destino
+      const folioRes = await this._getAvailableFolio(transfer.to_club_id, db);
+      if (folioRes.error) {
+        return createSkillResult({ success: false, errorCode: folioRes.error.code, errorMessage: folioRes.error.message });
+      }
+      const { assignedFolio } = folioRes;
+
+      // 2. Desactivar roster en club origen
+      const { error: deactErr } = await db
         .from('lg_club_rosters')
-        .update({ status: 'ACTIVE', valid_to: null })
+        .update({ status: 'INACTIVE', valid_to: new Date().toISOString() })
         .eq('player_id', transfer.player_id)
-        .eq('club_id', transfer.from_club_id);
+        .eq('club_id', transfer.from_club_id)
+        .eq('status', 'ACTIVE');
 
-      return createSkillResult({ success: false, errorCode: 'CREATE_ROSTER_FAILED', errorMessage: rosterError.message });
+      if (deactErr) {
+        return createSkillResult({ success: false, errorCode: 'ROSTER_UPDATE_FAILED', errorMessage: deactErr.message });
+      }
+
+      // 3. Crear nuevo roster activo en club destino
+      const { error: rostErr } = await db
+        .from('lg_club_rosters')
+        .insert({
+          club_id:    transfer.to_club_id,
+          player_id:  transfer.player_id,
+          status:     'ACTIVE',
+          valid_from: new Date().toISOString(),
+          club_folio: assignedFolio,
+        });
+
+      if (rostErr) {
+        // Rollback desactivación
+        await db
+          .from('lg_club_rosters')
+          .update({ status: 'ACTIVE', valid_to: null })
+          .eq('player_id', transfer.player_id)
+          .eq('club_id', transfer.from_club_id);
+
+        return createSkillResult({ success: false, errorCode: 'ROSTER_CREATE_FAILED', errorMessage: rostErr.message });
+      }
+
+      // 4. Actualizar registro principal del jugador en lg_players
+      await db
+        .from('lg_players')
+        .update({ club_id: transfer.to_club_id, club_folio: assignedFolio, updated_at: new Date().toISOString() })
+        .eq('id', transfer.player_id);
     }
 
-    // 3. Actualizar club_folio y club_id en lg_players
-    await db
-      .from('lg_players')
-      .update({ club_id: transfer.to_club_id, club_folio: assignedFolio })
-      .eq('id', transfer.player_id);
-
-    // 4. Marcar traspaso como ACEPTADO
-    const { data: updated, error: updateError } = await db
-      .from('lg_transfers')
-      .update({ status: 'ACEPTADO', updated_at: new Date().toISOString() })
-      .eq('id', transferId)
-      .select()
-      .single();
-
-    if (updateError) {
-      return createSkillResult({ success: false, errorCode: 'UPDATE_TRANSFER_FAILED', errorMessage: updateError.message });
+    // Actualizar estado en lg_transfers
+    const updateData = {
+      status: targetStatus,
+      updated_at: new Date().toISOString(),
+    };
+    if (isApprove) {
+      updateData.approved_by = approver;
+    }
+    if (notes) {
+      updateData.notes = notes;
     }
 
-    return createSkillResult({ success: true, data: { transfer: updated, assignedFolio } });
-  }
-
-  async _rejectTransfer({ clubId, transferId }, db) {
-    const { data: updated, error } = await db
+    const { data: updated, error: updErr } = await db
       .from('lg_transfers')
-      .update({ status: 'RECHAZADO', updated_at: new Date().toISOString() })
+      .update(updateData)
       .eq('id', transferId)
-      .eq('to_club_id', clubId)
-      .eq('status', 'ENVIADO')
-      .select()
+      .select(`
+        *,
+        player:lg_players(id, first_name, last_name, rut),
+        origin_club:lg_clubs!from_club_id(id, name),
+        destination_club:lg_clubs!to_club_id(id, name)
+      `)
       .single();
 
-    if (error || !updated) {
-      return createSkillResult({ success: false, errorCode: 'TRANSFER_NOT_FOUND', errorMessage: 'Traspaso no encontrado o no está pendiente' });
+    if (updErr) {
+      return createSkillResult({ success: false, errorCode: 'UPDATE_STATUS_FAILED', errorMessage: updErr.message });
     }
 
     return createSkillResult({ success: true, data: { transfer: updated } });
   }
 
-  async _cancelTransfer({ clubId, transferId }, db) {
-    const { error } = await db
+  // ── 5. GET_KPIS_SUMMARY (Métricas globales del período) ─────────────────────
+
+  async _getKpisSummary(_payload, db) {
+    const { data: allTransfers, error } = await db
       .from('lg_transfers')
-      .delete()
-      .eq('id', transferId)
-      .eq('from_club_id', clubId)
-      .eq('status', 'ENVIADO');
+      .select(`
+        id,
+        from_club_id,
+        to_club_id,
+        fee,
+        status,
+        created_at,
+        updated_at,
+        origin_club:lg_clubs!from_club_id(id, name),
+        destination_club:lg_clubs!to_club_id(id, name)
+      `);
 
     if (error) {
-      return createSkillResult({ success: false, errorCode: 'CANCEL_TRANSFER_FAILED', errorMessage: error.message });
+      return createSkillResult({ success: false, errorCode: 'GET_KPIS_FAILED', errorMessage: error.message });
     }
 
-    return createSkillResult({ success: true, data: { deleted: true, transferId } });
+    const transfers = allTransfers ?? [];
+    const total_transfers = transfers.length;
+
+    // Distribución por estado
+    const by_status = {
+      APPROVED: 0,
+      PENDING: 0,
+      REJECTED: 0,
+      CANCELLED: 0,
+    };
+
+    let total_fee_amount = 0;
+    let totalResolutionDaysSum = 0;
+    let resolvedCount = 0;
+
+    const originCounts = {};
+    const destCounts = {};
+
+    transfers.forEach((t) => {
+      const st = t.status.toUpperCase();
+      if (st === 'APPROVED' || st === 'ACEPTADO') {
+        by_status.APPROVED += 1;
+        total_fee_amount += parseFloat(t.fee || 0);
+
+        // Conteo de altas y bajas por club (para aprobadas)
+        if (t.from_club_id) {
+          const clubName = t.origin_club?.name || t.from_club_id;
+          originCounts[t.from_club_id] = originCounts[t.from_club_id] || { id: t.from_club_id, name: clubName, count: 0 };
+          originCounts[t.from_club_id].count += 1;
+        }
+
+        if (t.to_club_id) {
+          const clubName = t.destination_club?.name || t.to_club_id;
+          destCounts[t.to_club_id] = destCounts[t.to_club_id] || { id: t.to_club_id, name: clubName, count: 0 };
+          destCounts[t.to_club_id].count += 1;
+        }
+      } else if (st === 'PENDING' || st === 'ENVIADO') {
+        by_status.PENDING += 1;
+      } else if (st === 'REJECTED' || st === 'RECHAZADO') {
+        by_status.REJECTED += 1;
+      } else if (st === 'CANCELLED' || st === 'CANCELADO') {
+        by_status.CANCELLED += 1;
+      }
+
+      // Promedio días de resolución
+      if (st !== 'PENDING' && st !== 'ENVIADO' && t.created_at && t.updated_at) {
+        const created = new Date(t.created_at).getTime();
+        const updated = new Date(t.updated_at).getTime();
+        const diffDays = Math.max((updated - created) / (1000 * 60 * 60 * 24), 0);
+        totalResolutionDaysSum += diffDays;
+        resolvedCount += 1;
+      }
+    });
+
+    // Encontrar clubes con mayor actividad
+    const top_destination_club = Object.values(destCounts).sort((a, b) => b.count - a.count)[0] || null;
+    const top_origin_club      = Object.values(originCounts).sort((a, b) => b.count - a.count)[0] || null;
+
+    const avg_resolution_days = resolvedCount > 0 ? parseFloat((totalResolutionDaysSum / resolvedCount).toFixed(1)) : 0;
+
+    return createSkillResult({
+      success: true,
+      data: {
+        summary: {
+          total_transfers,
+          by_status,
+          total_fee_amount,
+          avg_resolution_days,
+          top_destination_club,
+          top_origin_club,
+        },
+      },
+    });
+  }
+
+  // ── 6. GET_KPIS_CLUB (Indicadores específicos por club) ────────────────────
+
+  async _getKpisClub({ clubId }, db) {
+    if (!clubId) {
+      return createSkillResult({ success: false, errorCode: 'MISSING_FIELDS', errorMessage: 'clubId es requerido' });
+    }
+
+    const { data: transfers, error } = await db
+      .from('lg_transfers')
+      .select('id, from_club_id, to_club_id, fee, status')
+      .or(`from_club_id.eq.${clubId},to_club_id.eq.${clubId}`);
+
+    if (error) {
+      return createSkillResult({ success: false, errorCode: 'GET_CLUB_KPIS_FAILED', errorMessage: error.message });
+    }
+
+    let purchases = 0;
+    let sales = 0;
+    let total_spent = 0;
+    let total_revenue = 0;
+
+    (transfers ?? []).forEach((t) => {
+      const st = t.status.toUpperCase();
+      const isApproved = st === 'APPROVED' || st === 'ACEPTADO';
+      const feeVal = parseFloat(t.fee || 0);
+
+      if (t.to_club_id === clubId && isApproved) {
+        purchases += 1;
+        total_spent += feeVal;
+      }
+      if (t.from_club_id === clubId && isApproved) {
+        sales += 1;
+        total_revenue += feeVal;
+      }
+    });
+
+    return createSkillResult({
+      success: true,
+      data: {
+        club_kpis: {
+          club_id: clubId,
+          purchases,
+          sales,
+          total_spent,
+          total_revenue,
+          net_balance: total_revenue - total_spent,
+        },
+      },
+    });
   }
 }

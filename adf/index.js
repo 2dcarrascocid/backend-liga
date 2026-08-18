@@ -57,6 +57,13 @@ export { LoansSpecialist } from './specialists/loans_specialist.js';
 export { CategoriesSpecialist } from './specialists/categories_specialist.js';
 export { TransfersSpecialist } from './specialists/transfers_specialist.js';
 export { PlayerDocumentsSpecialist } from './specialists/player_documents_specialist.js';
+export { RefereesSpecialist } from './specialists/referees_specialist.js';
+export { VenuesSpecialist } from './specialists/venues_specialist.js';
+export { VenueSchedulingSpecialist } from './specialists/venue_scheduling_specialist.js';
+export { TournamentsSpecialist } from './specialists/tournaments_specialist.js';
+export { MatchesSpecialist } from './specialists/matches_specialist.js';
+export { TournamentCostsSpecialist } from './specialists/tournament_costs_specialist.js';
+export { ClubSeriesSpecialist } from './specialists/club_series_specialist.js';
 
 // Orchestrator
 export { AgentOrchestrator } from './orchestrator/agent_orchestrator.js';
@@ -85,6 +92,13 @@ import { LoansSpecialist as _LoansSpecialist } from './specialists/loans_special
 import { CategoriesSpecialist as _CategoriesSpecialist } from './specialists/categories_specialist.js';
 import { TransfersSpecialist as _TransfersSpecialist } from './specialists/transfers_specialist.js';
 import { PlayerDocumentsSpecialist as _PlayerDocumentsSpecialist } from './specialists/player_documents_specialist.js';
+import { RefereesSpecialist as _RefereesSpecialist } from './specialists/referees_specialist.js';
+import { VenuesSpecialist as _VenuesSpecialist } from './specialists/venues_specialist.js';
+import { VenueSchedulingSpecialist as _VenueSchedulingSpecialist } from './specialists/venue_scheduling_specialist.js';
+import { TournamentsSpecialist as _TournamentsSpecialist } from './specialists/tournaments_specialist.js';
+import { MatchesSpecialist as _MatchesSpecialist } from './specialists/matches_specialist.js';
+import { TournamentCostsSpecialist as _TournamentCostsSpecialist } from './specialists/tournament_costs_specialist.js';
+import { ClubSeriesSpecialist as _ClubSeriesSpecialist } from './specialists/club_series_specialist.js';
 import { supabaseAdmin } from '../services/db.js';
 
 const _validators = {
@@ -101,6 +115,13 @@ const _specialists = {
   categories: new _CategoriesSpecialist(),
   transfers:        new _TransfersSpecialist(),
   player_documents: new _PlayerDocumentsSpecialist(),
+  referees:         new _RefereesSpecialist(),
+  venues:           new _VenuesSpecialist(),
+  venue_scheduling: new _VenueSchedulingSpecialist(),
+  tournaments:       new _TournamentsSpecialist(),
+  matches:           new _MatchesSpecialist(),
+  tournament_costs:  new _TournamentCostsSpecialist(),
+  club_series:       new _ClubSeriesSpecialist(),
 };
 
 const _orchestrator = new _AgentOrchestrator({

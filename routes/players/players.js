@@ -221,13 +221,15 @@ export const listPlayersByOrg = async (event) => {
       effectiveLimit = (parsedLimit > 0) ? parsedLimit : 10;
     }
 
+    const targetStatus = status ? status.toUpperCase() : 'ACTIVE';
+
     let query = supabaseAdmin
       .from('lg_players')
       .select('*, active_roster:lg_club_rosters!inner(*), club:lg_clubs(*)', { count: 'exact' })
       .eq('org_id', orgId);
 
-    if (status) {
-      query = query.eq('active_roster.status', status);
+    if (targetStatus !== 'ALL' && targetStatus !== 'TODOS') {
+      query = query.eq('active_roster.status', targetStatus);
     }
 
     if (q) {
@@ -235,7 +237,7 @@ export const listPlayersByOrg = async (event) => {
     }
 
     query = query
-      .order('last_name', { ascending: true })
+      .order('club_folio', { ascending: true, nullsFirst: false })
       .range(offset, offset + effectiveLimit - 1);
 
     const { data, error, count } = await query;
@@ -244,15 +246,16 @@ export const listPlayersByOrg = async (event) => {
     const processedData = (data || []).map(p => {
       const { active_roster, club, ...playerData } = p;
       const clubObj = Array.isArray(club) ? club[0] : club;
-      const rosterObj = Array.isArray(active_roster)
-        ? active_roster.find(r => r.status === status) || active_roster[0]
-        : active_roster;
+      const rosterList = Array.isArray(active_roster) ? active_roster : (active_roster ? [active_roster] : []);
+      const rosterObj = (targetStatus !== 'ALL' && targetStatus !== 'TODOS')
+        ? rosterList.find(r => r.status === targetStatus) || rosterList[0]
+        : rosterList.find(r => r.status === 'ACTIVE') || rosterList[0];
 
       return {
         ...playerData,
         club_name: clubObj?.name || null,
         club_folio: rosterObj?.club_folio ?? p.club_folio ?? null,
-        status: rosterObj?.status || status || 'ACTIVE'
+        status: rosterObj?.status || 'ACTIVE'
       };
     });
 

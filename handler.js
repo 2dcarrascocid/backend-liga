@@ -10,6 +10,7 @@
 
 import { adf, buildTask, extractHeaders, taskResultToLambdaResponse } from './adf/index.js'
 import { handler as adfHealthHandler } from './routes/adf/health.js'
+import { getSwaggerDocs } from './routes/docs/docs.js'
 import { errorResponse } from './utils/response.js'
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -189,6 +190,61 @@ const ROUTES = [
     input: { rosterId: pp.rosterId, status: body.status, validTo: body.valid_to },
   })),
 
+  // ── Series de Club ───────────────────────────────────────────────────────
+
+  route('GET', '/clubs/{clubId}/series', (pp) => ({
+    type: 'LIST_SERIES', domain: 'club_series',
+    input: { clubId: pp.clubId },
+  })),
+
+  route('POST', '/clubs/{clubId}/series', (pp, body) => ({
+    type: 'CREATE_SERIES', domain: 'club_series',
+    input: {
+      clubId: pp.clubId, name: body.name, description: body.description,
+      categoryId: body.category_id, minAge: body.min_age, ageRestriction: body.age_restriction,
+      active: body.active,
+    },
+  })),
+
+  route('GET', '/series', (_pp, _body, qs) => ({
+    type: 'LIST_SERIES', domain: 'club_series',
+    input: { orgId: qs.org_id, q: qs.q, limit: qs.limit ? parseInt(qs.limit, 10) : 50 },
+  })),
+
+  route('GET', '/series/{seriesId}', (pp) => ({
+    type: 'GET_SERIES', domain: 'club_series',
+    input: { seriesId: pp.seriesId },
+  })),
+
+  route('PATCH', '/series/{seriesId}', (pp, body) => ({
+    type: 'UPDATE_SERIES', domain: 'club_series',
+    input: {
+      seriesId: pp.seriesId, name: body.name, description: body.description,
+      categoryId: body.category_id, minAge: body.min_age, ageRestriction: body.age_restriction,
+      active: body.active,
+    },
+  })),
+
+  route('DELETE', '/series/{seriesId}', (pp) => ({
+    type: 'DELETE_SERIES', domain: 'club_series',
+    input: { seriesId: pp.seriesId },
+  })),
+
+  route('GET', '/series/{seriesId}/roster', (pp) => ({
+    type: 'GET_SERIES_ROSTER', domain: 'club_series',
+    input: { seriesId: pp.seriesId },
+  })),
+
+  route('POST', '/series/{seriesId}/players/{playerId}', (pp) => ({
+    type: 'ASSIGN_PLAYER', domain: 'club_series',
+    input: { seriesId: pp.seriesId, playerId: pp.playerId },
+  })),
+
+  route('DELETE', '/series/{seriesId}/players/{playerId}', (pp) => ({
+    type: 'UNASSIGN_PLAYER', domain: 'club_series',
+    input: { seriesId: pp.seriesId, playerId: pp.playerId },
+  })),
+
   // ── Players ───────────────────────────────────────────────────────────────
 
   route('POST', '/clubs/{clubId}/players', (pp, body) => ({
@@ -242,6 +298,17 @@ const ROUTES = [
       orgId:      pp.orgId,
       q:          qs.q,
       status:     'ACTIVE',
+      limit:      qs.limit ? parseInt(qs.limit, 10) : 10,
+      next_token: qs.next_token,
+    },
+  })),
+
+  route('GET', '/orgs/{orgId}/players/inactive', (pp, _body, qs) => ({
+    type: 'LIST_PLAYERS_BY_ORG', domain: 'players',
+    input: {
+      orgId:      pp.orgId,
+      q:          qs.q,
+      status:     'INACTIVE',
       limit:      qs.limit ? parseInt(qs.limit, 10) : 10,
       next_token: qs.next_token,
     },
@@ -330,7 +397,57 @@ const ROUTES = [
     input: { clubId: pp.clubId, categoryId: pp.categoryId },
   })),
 
-  // ── Traspasos ─────────────────────────────────────────────────────────────
+  // ── Traspasos y KPIs ───────────────────────────────────────────────────────
+
+  route('POST', '/transfers', (_pp, body, _qs, event) => ({
+    type: 'CREATE_TRANSFER', domain: 'transfers',
+    input: {
+      playerId:          body.player_id ?? body.playerId,
+      originClubId:      body.origin_club_id ?? body.from_club_id ?? body.originClubId,
+      destinationClubId: body.destination_club_id ?? body.to_club_id ?? body.destinationClubId,
+      fee:               body.fee ?? 0,
+      notes:             body.notes,
+      transferDate:      body.transfer_date ?? body.transferDate,
+      requestedBy:       body.requested_by,
+    },
+  })),
+
+  route('GET', '/transfers', (_pp, _body, qs) => ({
+    type: 'LIST_TRANSFERS', domain: 'transfers',
+    input: {
+      playerId:          qs.player_id ?? qs.playerId,
+      originClubId:      qs.origin_club_id ?? qs.from_club_id ?? qs.originClubId,
+      destinationClubId: qs.destination_club_id ?? qs.to_club_id ?? qs.destinationClubId,
+      status:            qs.status,
+      limit:             qs.limit ? parseInt(qs.limit, 10) : 10,
+      nextToken:         qs.next_token ?? qs.nextToken,
+    },
+  })),
+
+  route('GET', '/transfers/kpis/summary', () => ({
+    type: 'GET_KPIS_SUMMARY', domain: 'transfers',
+    input: {},
+  })),
+
+  route('GET', '/transfers/kpis/club/{clubId}', (pp) => ({
+    type: 'GET_KPIS_CLUB', domain: 'transfers',
+    input: { clubId: pp.clubId },
+  })),
+
+  route('GET', '/transfers/{id}', (pp) => ({
+    type: 'GET_TRANSFER', domain: 'transfers',
+    input: { transferId: pp.id },
+  })),
+
+  route('PATCH', '/transfers/{id}/status', (pp, body) => ({
+    type: 'UPDATE_TRANSFER_STATUS', domain: 'transfers',
+    input: {
+      transferId: pp.id,
+      status:     body.status,
+      approvedBy: body.approved_by ?? body.approvedBy,
+      notes:      body.notes,
+    },
+  })),
 
   route('GET', '/clubs/{clubId}/transfers', (pp) => ({
     type: 'LIST_TRANSFERS', domain: 'transfers',
@@ -340,26 +457,366 @@ const ROUTES = [
   route('POST', '/clubs/{clubId}/transfers', (pp, body) => ({
     type: 'CREATE_TRANSFER', domain: 'transfers',
     input: {
-      clubId:   pp.clubId,
-      playerId: body.player_id,
-      toClubId: body.to_club_id,
-      notes:    body.notes,
+      clubId:            pp.clubId,
+      originClubId:      pp.clubId,
+      destinationClubId: body.to_club_id,
+      playerId:          body.player_id,
+      notes:             body.notes,
     },
   })),
 
   route('PATCH', '/clubs/{clubId}/transfers/{transferId}/accept', (pp) => ({
     type: 'ACCEPT_TRANSFER', domain: 'transfers',
-    input: { clubId: pp.clubId, transferId: pp.transferId },
+    input: { clubId: pp.clubId, transferId: pp.transferId, status: 'APPROVED' },
   })),
 
   route('PATCH', '/clubs/{clubId}/transfers/{transferId}/reject', (pp) => ({
     type: 'REJECT_TRANSFER', domain: 'transfers',
-    input: { clubId: pp.clubId, transferId: pp.transferId },
+    input: { clubId: pp.clubId, transferId: pp.transferId, status: 'REJECTED' },
   })),
 
   route('DELETE', '/clubs/{clubId}/transfers/{transferId}', (pp) => ({
     type: 'CANCEL_TRANSFER', domain: 'transfers',
-    input: { clubId: pp.clubId, transferId: pp.transferId },
+    input: { clubId: pp.clubId, transferId: pp.transferId, status: 'CANCELLED' },
+  })),
+
+  // ── Árbitros ──────────────────────────────────────────────────────────────
+
+  route('GET', '/referees', (_pp, _body, qs) => ({
+    type: 'LIST_REFEREES', domain: 'referees',
+    input: {
+      orgId:     qs.org_id,
+      active:    qs.active,
+      q:         qs.q,
+      limit:     qs.limit ? parseInt(qs.limit, 10) : 20,
+      nextToken: qs.next_token,
+    },
+  })),
+
+  route('POST', '/referees', (_pp, body) => ({
+    type: 'CREATE_REFEREE', domain: 'referees',
+    input: {
+      orgId:    body.org_id,
+      fullName: body.full_name,
+      phone:    body.phone,
+      email:    body.email,
+      notes:    body.notes,
+      active:   body.active,
+    },
+  })),
+
+  route('GET', '/referees/{refereeId}', (pp) => ({
+    type: 'GET_REFEREE', domain: 'referees',
+    input: { refereeId: pp.refereeId },
+  })),
+
+  route('PATCH', '/referees/{refereeId}', (pp, body) => ({
+    type: 'UPDATE_REFEREE', domain: 'referees',
+    input: { refereeId: pp.refereeId, ...body },
+  })),
+
+  route('DELETE', '/referees/{refereeId}', (pp) => ({
+    type: 'DELETE_REFEREE', domain: 'referees',
+    input: { refereeId: pp.refereeId },
+  })),
+
+  // ── Canchas ───────────────────────────────────────────────────────────────
+
+  route('GET', '/venues', (_pp, _body, qs) => ({
+    type: 'LIST_VENUES', domain: 'venues',
+    input: {
+      orgId:     qs.org_id,
+      status:    qs.status,
+      q:         qs.q,
+      limit:     qs.limit ? parseInt(qs.limit, 10) : 20,
+      nextToken: qs.next_token,
+    },
+  })),
+
+  route('POST', '/venues', (_pp, body) => ({
+    type: 'CREATE_VENUE', domain: 'venues',
+    input: {
+      orgId:       body.org_id,
+      name:        body.name,
+      address:     body.address,
+      region:      body.region,
+      city:        body.city,
+      surfaceType: body.surface_type,
+      lighting:    body.lighting,
+      status:      body.status,
+      notes:       body.notes,
+    },
+  })),
+
+  route('GET', '/venues/{venueId}', (pp) => ({
+    type: 'GET_VENUE', domain: 'venues',
+    input: { venueId: pp.venueId },
+  })),
+
+  route('PATCH', '/venues/{venueId}', (pp, body) => ({
+    type: 'UPDATE_VENUE', domain: 'venues',
+    input: { venueId: pp.venueId, ...body },
+  })),
+
+  route('DELETE', '/venues/{venueId}', (pp) => ({
+    type: 'DELETE_VENUE', domain: 'venues',
+    input: { venueId: pp.venueId },
+  })),
+
+  // ── Agenda de canchas ────────────────────────────────────────────────────
+
+  route('GET', '/venues/{venueId}/availability', (pp) => ({
+    type: 'LIST_AVAILABILITY', domain: 'venue_scheduling',
+    input: { venueId: pp.venueId },
+  })),
+
+  route('POST', '/venues/{venueId}/availability', (pp, body) => ({
+    type: 'CREATE_AVAILABILITY', domain: 'venue_scheduling',
+    input: {
+      venueId:      pp.venueId,
+      diaSemana:    body.dia_semana,
+      horaApertura: body.hora_apertura,
+      horaCierre:   body.hora_cierre,
+    },
+  })),
+
+  route('DELETE', '/venues/{venueId}/availability/{availabilityId}', (pp) => ({
+    type: 'DELETE_AVAILABILITY', domain: 'venue_scheduling',
+    input: { availabilityId: pp.availabilityId },
+  })),
+
+  route('GET', '/venues/{venueId}/bookings', (pp, _body, qs) => ({
+    type: 'LIST_BOOKINGS', domain: 'venue_scheduling',
+    input: { venueId: pp.venueId, fecha: qs.fecha },
+  })),
+
+  route('POST', '/venues/{venueId}/bookings', (pp, body) => ({
+    type: 'CREATE_BOOKING', domain: 'venue_scheduling',
+    input: {
+      venueId:    pp.venueId,
+      fecha:      body.fecha,
+      horaInicio: body.hora_inicio,
+      horaFin:    body.hora_fin,
+      partidoId:  body.partido_id,
+    },
+  })),
+
+  route('DELETE', '/venues/{venueId}/bookings/{bookingId}', (pp) => ({
+    type: 'DELETE_BOOKING', domain: 'venue_scheduling',
+    input: { bookingId: pp.bookingId },
+  })),
+
+  // ── Torneos ───────────────────────────────────────────────────────────────
+
+  route('GET', '/tournaments', (_pp, _body, qs) => ({
+    type: 'LIST_TOURNAMENTS', domain: 'tournaments',
+    input: {
+      orgId:      qs.org_id,
+      status:     qs.status,
+      categoryId: qs.category_id,
+      limit:      qs.limit ? parseInt(qs.limit, 10) : 20,
+      nextToken:  qs.next_token,
+    },
+  })),
+
+  route('POST', '/tournaments', (_pp, body) => ({
+    type: 'CREATE_TOURNAMENT', domain: 'tournaments',
+    input: {
+      orgId:                 body.org_id,
+      categoryId:            body.category_id,
+      name:                  body.name,
+      season:                body.season,
+      format:                body.format,
+      status:                body.status,
+      startDate:             body.start_date,
+      endDate:               body.end_date,
+      roundsType:            body.rounds_type,
+      pointsWin:             body.points_win,
+      pointsDraw:            body.points_draw,
+      pointsLoss:            body.points_loss,
+      groupCount:            body.group_count,
+      teamsAdvancePerGroup:  body.teams_advance_per_group,
+      twoLeggedKnockout:     body.two_legged_knockout,
+      hasThirdPlaceMatch:    body.has_third_place_match,
+      hasConsolation:        body.has_consolation,
+      consolationName:       body.consolation_name,
+      notes:                 body.notes,
+    },
+  })),
+
+  route('GET', '/tournaments/{tournamentId}', (pp) => ({
+    type: 'GET_TOURNAMENT', domain: 'tournaments',
+    input: { tournamentId: pp.tournamentId },
+  })),
+
+  route('PATCH', '/tournaments/{tournamentId}', (pp, body) => ({
+    type: 'UPDATE_TOURNAMENT', domain: 'tournaments',
+    input: { tournamentId: pp.tournamentId, ...body },
+  })),
+
+  route('DELETE', '/tournaments/{tournamentId}', (pp) => ({
+    type: 'DELETE_TOURNAMENT', domain: 'tournaments',
+    input: { tournamentId: pp.tournamentId },
+  })),
+
+  route('GET', '/tournaments/{tournamentId}/teams', (pp) => ({
+    type: 'LIST_TOURNAMENT_TEAMS', domain: 'tournaments',
+    input: { tournamentId: pp.tournamentId },
+  })),
+
+  route('POST', '/tournaments/{tournamentId}/teams', (pp, body) => ({
+    type: 'REGISTER_TEAM', domain: 'tournaments',
+    input: { tournamentId: pp.tournamentId, seriesId: body.series_id, groupName: body.group_name, seed: body.seed },
+  })),
+
+  route('DELETE', '/tournaments/{tournamentId}/teams/{teamId}', (pp) => ({
+    type: 'UNREGISTER_TEAM', domain: 'tournaments',
+    input: { tournamentId: pp.tournamentId, teamId: pp.teamId },
+  })),
+
+  route('GET', '/tournaments/{tournamentId}/stages', (pp) => ({
+    type: 'LIST_STAGES', domain: 'tournaments',
+    input: { tournamentId: pp.tournamentId },
+  })),
+
+  route('POST', '/tournaments/{tournamentId}/fixture/generate', (pp, body) => ({
+    type: 'GENERATE_FIXTURE', domain: 'tournaments',
+    input: {
+      tournamentId:          pp.tournamentId,
+      startDate:             body.start_date,
+      daysBetweenMatchdays:  body.days_between_matchdays,
+      force:                 body.force,
+    },
+  })),
+
+  route('POST', '/tournaments/{tournamentId}/fixture/generate-knockout', (pp, body) => ({
+    type: 'GENERATE_KNOCKOUT_FROM_GROUPS', domain: 'tournaments',
+    input: { tournamentId: pp.tournamentId, stageId: body.stage_id },
+  })),
+
+  route('POST', '/tournaments/{tournamentId}/consolation/generate', (pp, body) => ({
+    type: 'GENERATE_CONSOLATION', domain: 'tournaments',
+    input: { tournamentId: pp.tournamentId, teamIds: body.team_ids ?? body.series_ids },
+  })),
+
+  route('GET', '/tournaments/{tournamentId}/standings', (pp, _body, qs) => ({
+    type: 'GET_STANDINGS', domain: 'tournaments',
+    input: { tournamentId: pp.tournamentId, stageId: qs.stage_id, groupName: qs.group_name },
+  })),
+
+  // ── Partidos ──────────────────────────────────────────────────────────────
+
+  route('GET', '/tournaments/{tournamentId}/matchdays', (pp, _body, qs) => ({
+    type: 'LIST_MATCHDAYS', domain: 'matches',
+    input: { tournamentId: pp.tournamentId, stageId: qs.stage_id },
+  })),
+
+  route('POST', '/tournaments/{tournamentId}/matchdays', (pp, body) => ({
+    type: 'CREATE_MATCHDAY', domain: 'matches',
+    input: { tournamentId: pp.tournamentId, stageId: body.stage_id, number: body.number, name: body.name, date: body.date },
+  })),
+
+  route('GET', '/tournaments/{tournamentId}/matches', (pp, _body, qs) => ({
+    type: 'LIST_MATCHES', domain: 'matches',
+    input: {
+      tournamentId: pp.tournamentId,
+      matchdayId:   qs.matchday_id,
+      stageId:      qs.stage_id,
+      seriesId:     qs.series_id,
+      status:       qs.status,
+    },
+  })),
+
+  route('GET', '/matches/{matchId}', (pp) => ({
+    type: 'GET_MATCH', domain: 'matches',
+    input: { matchId: pp.matchId },
+  })),
+
+  route('PATCH', '/matches/{matchId}/logistics', (pp, body) => ({
+    type: 'UPDATE_MATCH_LOGISTICS', domain: 'matches',
+    input: {
+      matchId:       pp.matchId,
+      venueId:       body.venue_id,
+      refereeId:     body.referee_id,
+      matchDate:     body.match_date,
+      matchTime:     body.match_time,
+      timeSlot:      body.time_slot,
+      observations:  body.observations,
+      matchdayId:    body.matchday_id,
+      status:        body.status,
+    },
+  })),
+
+  route('PATCH', '/matches/{matchId}/result', (pp, body) => ({
+    type: 'UPDATE_MATCH_RESULT', domain: 'matches',
+    input: {
+      matchId:            pp.matchId,
+      homeScore:          body.home_score,
+      awayScore:          body.away_score,
+      homePenaltyScore:   body.home_penalty_score,
+      awayPenaltyScore:   body.away_penalty_score,
+      status:             body.status,
+      observations:       body.observations,
+    },
+  })),
+
+  route('GET', '/matches/{matchId}/events', (pp) => ({
+    type: 'LIST_MATCH_EVENTS', domain: 'matches',
+    input: { matchId: pp.matchId },
+  })),
+
+  route('POST', '/matches/{matchId}/events', (pp, body) => ({
+    type: 'ADD_MATCH_EVENT', domain: 'matches',
+    input: {
+      matchId:   pp.matchId,
+      seriesId:  body.series_id,
+      playerId:  body.player_id,
+      eventType: body.event_type,
+      minute:    body.minute,
+      notes:     body.notes,
+    },
+  })),
+
+  route('DELETE', '/matches/{matchId}/events/{eventId}', (pp) => ({
+    type: 'DELETE_MATCH_EVENT', domain: 'matches',
+    input: { matchId: pp.matchId, eventId: pp.eventId },
+  })),
+
+  // ── Costos de Torneo ──────────────────────────────────────────────────────
+
+  route('GET', '/matchdays/{matchdayId}/costs', (pp) => ({
+    type: 'LIST_MATCHDAY_COSTS', domain: 'tournament_costs',
+    input: { matchdayId: pp.matchdayId },
+  })),
+
+  route('POST', '/matchdays/{matchdayId}/costs', (pp, body) => ({
+    type: 'CREATE_MATCHDAY_COST', domain: 'tournament_costs',
+    input: { matchdayId: pp.matchdayId, concept: body.concept, amount: body.amount, notes: body.notes },
+  })),
+
+  route('DELETE', '/matchday-costs/{costId}', (pp) => ({
+    type: 'DELETE_MATCHDAY_COST', domain: 'tournament_costs',
+    input: { costId: pp.costId },
+  })),
+
+  route('GET', '/matches/{matchId}/costs', (pp) => ({
+    type: 'LIST_MATCH_COSTS', domain: 'tournament_costs',
+    input: { matchId: pp.matchId },
+  })),
+
+  route('POST', '/matches/{matchId}/costs', (pp, body) => ({
+    type: 'CREATE_MATCH_COST', domain: 'tournament_costs',
+    input: { matchId: pp.matchId, concept: body.concept, amount: body.amount, notes: body.notes },
+  })),
+
+  route('DELETE', '/match-costs/{costId}', (pp) => ({
+    type: 'DELETE_MATCH_COST', domain: 'tournament_costs',
+    input: { costId: pp.costId },
+  })),
+
+  route('GET', '/tournaments/{tournamentId}/costs/summary', (pp) => ({
+    type: 'GET_COSTS_SUMMARY', domain: 'tournament_costs',
+    input: { tournamentId: pp.tournamentId },
   })),
 ]
 
@@ -374,9 +831,14 @@ export const handler = async (event, context) => {
 
   const path = event.rawPath ?? event.path ?? '/'
 
-  // Ruta especial: health check del ADF (no requiere auth ni va por orchestrator)
+  // Ruta especial: health check del ADF
   if (method === 'GET' && path === '/adf/health') {
     return adfHealthHandler(event, context)
+  }
+
+  // Ruta especial: Documentación OpenAPI / Swagger
+  if (method === 'GET' && (path === '/api/docs' || path === '/docs')) {
+    return getSwaggerDocs(event, context)
   }
 
   const qs   = event.queryStringParameters ?? {}

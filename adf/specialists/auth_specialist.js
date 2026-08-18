@@ -43,7 +43,7 @@ function generateSlug(name) {
   return name
     .toLowerCase()
     .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[̀-ͯ]/g, '')
     .replace(/[^a-z0-9\s-]/g, '')
     .trim()
     .replace(/\s+/g, '-');
@@ -58,6 +58,22 @@ async function getOrgMemberships(db, userId) {
   return (data || []).map(row => ({
     role: row.role,
     org: row.lg_orgs,
+  }));
+}
+
+// Membresías de club (ADMIN_CLUB) — informa al frontend a qué club puntual
+// tiene acceso un administrador de club, para acotar menú y navegación.
+async function getClubMemberships(db, userId) {
+  const { data } = await db
+    .from('lg_club_users')
+    .select('role, club_id, lg_clubs(id, name, org_id)')
+    .eq('user_id', userId)
+    .eq('role', 'ADMIN_CLUB');
+
+  return (data || []).map(row => ({
+    role: row.role,
+    club_id: row.club_id,
+    club: row.lg_clubs,
   }));
 }
 
@@ -137,9 +153,10 @@ export class AuthSpecialist extends Skill {
 
     if (!error && data?.session) {
       const orgs = await getOrgMemberships(supabase, data.user.id);
+      const clubs = await getClubMemberships(supabase, data.user.id);
       return createSkillResult({
         success: true,
-        data: { session: data.session, user: data.user, orgs },
+        data: { session: data.session, user: data.user, orgs, clubs },
       });
     }
 
@@ -160,9 +177,10 @@ export class AuthSpecialist extends Skill {
           const { data: migrated, error: migErr } = await supabase.auth.signInWithPassword({ email, password });
           if (!migErr && migrated?.session) {
             const orgs = await getOrgMemberships(supabase, migrated.user.id);
+            const clubs = await getClubMemberships(supabase, migrated.user.id);
             return createSkillResult({
               success: true,
-              data: { session: migrated.session, user: migrated.user, orgs, migrated: true },
+              data: { session: migrated.session, user: migrated.user, orgs, clubs, migrated: true },
             });
           }
         }
@@ -191,9 +209,10 @@ export class AuthSpecialist extends Skill {
     }
 
     const orgs = await getOrgMemberships(supabase, data.user.id);
+    const clubs = await getClubMemberships(supabase, data.user.id);
     return createSkillResult({
       success: true,
-      data: { session: data.session, user: data.user, orgs },
+      data: { session: data.session, user: data.user, orgs, clubs },
     });
   }
 
@@ -364,9 +383,28 @@ export class AuthSpecialist extends Skill {
 
     const newUserId = signUpData.user.id;
 
-    await supabase
+    // El email ya fue validado por el ADMIN de la organización al invitar a
+    // esta persona puntual — se confirma para que pueda hacer login de inmediato
+    // sin depender del flujo de confirmación por correo de Supabase.
+    const { error: confirmErr } = await supabase.rpc('fn_confirm_user_email', { p_user_id: newUserId });
+    if (confirmErr) {
+      console.error('fn_confirm_user_email error:', confirmErr.message);
+    }
+
+    const { error: roleErr } = await supabase
       .from('lg_club_users')
       .upsert({ club_id: invite.club_id, user_id: newUserId, role: 'ADMIN_CLUB' }, { onConflict: 'club_id,user_id' });
+
+    if (roleErr) {
+      // Un email solo puede ser ADMIN_CLUB de un club (idx_club_users_admin_club_one_per_user).
+      // No marcar la invitación como aceptada si no se pudo asignar el rol.
+      console.error('lg_club_users upsert error in _acceptClubInvite:', roleErr.message);
+      return createSkillResult({
+        success: false,
+        errorCode: 'ALREADY_CLUB_ADMIN_ELSEWHERE',
+        errorMessage: 'Esta cuenta ya es administradora de otro club. Un administrador solo puede pertenecer a un club.',
+      });
+    }
 
     await supabase
       .from('lg_club_invites')

@@ -41,6 +41,7 @@
 import { Skill } from '../contracts/skill_contract.js';
 import { createSkillResult } from '../contracts/task_schema.js';
 import { encodeNext, decodeNext } from '../../utils/pagination.js';
+import { assertClubAccess } from './lib/club_access.js';
 
 const CAPABILITIES = [
   'CREATE_PLAYER', 'GET_PLAYER',
@@ -107,10 +108,10 @@ export class PlayersSpecialist extends Skill {
     try {
       switch (operation) {
         case 'CREATE_PLAYER':         return this._createPlayer(payload, db, userId);
-        case 'GET_PLAYER':            return this._getPlayer(payload, db);
-        case 'LIST_PLAYERS_BY_CLUB':  return this._listByClub(payload, db);
-        case 'LIST_PLAYERS_BY_ORG':   return this._listByOrg(payload, db);
-        case 'UPDATE_PLAYER':         return this._updatePlayer(payload, db);
+        case 'GET_PLAYER':            return this._getPlayer(payload, db, userId);
+        case 'LIST_PLAYERS_BY_CLUB':  return this._listByClub(payload, db, userId);
+        case 'LIST_PLAYERS_BY_ORG':   return this._listByOrg(payload, db, userId);
+        case 'UPDATE_PLAYER':         return this._updatePlayer(payload, db, userId);
         case 'UPDATE_STATUS':         return this._updateStatus(payload, db, userId);
         case 'CHANGE_CLUB':           return this._changeClub(payload, db, userId);
         case 'UPLOAD_PHOTO':          return this._uploadPhoto(payload, db);
@@ -194,22 +195,6 @@ export class PlayersSpecialist extends Skill {
 
   // ── Operations ───────────────────────────────────────────────────────────
 
-  // Verifica que userId sea org ADMIN o ADMIN_CLUB del club específico
-  async _assertClubAccess(clubId, userId, db) {
-    const { data: club } = await db.from('lg_clubs').select('org_id').eq('id', clubId).single();
-    if (!club) return 'CLUB_NOT_FOUND';
-
-    const [{ data: orgAdmin }, { data: clubAdmin }] = await Promise.all([
-      db.from('lg_org_users').select('role')
-        .eq('user_id', userId).eq('org_id', club.org_id).maybeSingle(),
-      db.from('lg_club_users').select('role')
-        .eq('user_id', userId).eq('club_id', clubId).eq('role', 'ADMIN_CLUB').maybeSingle(),
-    ]);
-
-    if (orgAdmin?.role === 'ADMIN' || clubAdmin?.role === 'ADMIN_CLUB') return null;
-    return 'FORBIDDEN';
-  }
-
   async _createPlayer(payload, db, userId) {
     const {
       clubId,
@@ -218,7 +203,7 @@ export class PlayersSpecialist extends Skill {
       clubFolio,
     } = payload;
 
-    const accessError = await this._assertClubAccess(clubId, userId, db);
+    const accessError = await assertClubAccess(clubId, userId, db);
     if (accessError) {
       return createSkillResult({ success: false, errorCode: accessError, errorMessage: 'No tienes permisos para crear jugadores en este club' });
     }
@@ -286,7 +271,7 @@ export class PlayersSpecialist extends Skill {
     return createSkillResult({ success: true, data: { player, roster } });
   }
 
-  async _getPlayer({ playerId }, db) {
+  async _getPlayer({ playerId }, db, userId) {
     const { data: player, error } = await db
       .from('lg_players')
       .select('*, active_roster:lg_club_rosters(*)')
@@ -296,12 +281,22 @@ export class PlayersSpecialist extends Skill {
     if (error) return createSkillResult({ success: false, errorCode: 'GET_PLAYER_FAILED', errorMessage: error.message });
     if (!player) return createSkillResult({ success: false, errorCode: 'PLAYER_NOT_FOUND', errorMessage: 'Jugador no encontrado' });
 
+    const accessError = await assertClubAccess(player.club_id, userId, db);
+    if (accessError) {
+      return createSkillResult({ success: false, errorCode: accessError, errorMessage: 'No tienes permisos para ver jugadores de este club' });
+    }
+
     const activeRoster = (player.active_roster ?? []).find(r => r.status === 'ACTIVE') || null;
 
     return createSkillResult({ success: true, data: { player: { ...player, active_roster: activeRoster } } });
   }
 
-  async _listByClub({ clubId, q, status = 'ACTIVE', limit = 10, next_token }, db) {
+  async _listByClub({ clubId, q, status = 'ACTIVE', limit = 10, next_token }, db, userId) {
+    const accessError = await assertClubAccess(clubId, userId, db);
+    if (accessError) {
+      return createSkillResult({ success: false, errorCode: accessError, errorMessage: 'No tienes permisos para ver jugadores de este club' });
+    }
+
     let offset = 0;
     if (next_token) {
       try { offset = JSON.parse(atob(next_token)).offset ?? 0; } catch { offset = 0; }
@@ -332,7 +327,15 @@ export class PlayersSpecialist extends Skill {
     return createSkillResult({ success: true, data: { data, next_token: newToken, total_registros: total, limit } });
   }
 
-  async _listByOrg({ orgId, q, status = 'ACTIVE', limit = 10, next_token }, db) {
+  async _listByOrg({ orgId, q, status = 'ACTIVE', limit = 10, next_token }, db, userId) {
+    const { data: orgAdmin } = await db
+      .from('lg_org_users').select('role')
+      .eq('user_id', userId).eq('org_id', orgId).maybeSingle();
+
+    if (orgAdmin?.role !== 'ADMIN') {
+      return createSkillResult({ success: false, errorCode: 'FORBIDDEN', errorMessage: 'Solo el ADMIN de la organización puede ver el listado global de jugadores' });
+    }
+
     let offset = 0;
     let effectiveLimit = parseInt(limit, 10) || 10;
 
@@ -350,13 +353,15 @@ export class PlayersSpecialist extends Skill {
       }
     }
 
+    const targetStatus = status ? status.toUpperCase() : 'ACTIVE';
+
     let query = db
       .from('lg_players')
       .select('*, active_roster:lg_club_rosters!inner(*), club:lg_clubs(*)', { count: 'exact' })
       .eq('org_id', orgId);
 
-    if (status) {
-      query = query.eq('active_roster.status', status);
+    if (targetStatus !== 'ALL' && targetStatus !== 'TODOS') {
+      query = query.eq('active_roster.status', targetStatus);
     }
 
     if (q) {
@@ -364,7 +369,7 @@ export class PlayersSpecialist extends Skill {
     }
 
     query = query
-      .order('last_name', { ascending: true })
+      .order('club_folio', { ascending: true, nullsFirst: false })
       .range(offset, offset + effectiveLimit - 1);
 
     const { data, error, count } = await query;
@@ -379,15 +384,16 @@ export class PlayersSpecialist extends Skill {
     const processed = (data || []).map(p => {
       const { active_roster, club, ...playerData } = p;
       const clubObj = Array.isArray(club) ? club[0] : club;
-      const rosterObj = Array.isArray(active_roster)
-        ? active_roster.find(r => r.status === status) || active_roster[0]
-        : active_roster;
+      const rosterList = Array.isArray(active_roster) ? active_roster : (active_roster ? [active_roster] : []);
+      const rosterObj = (targetStatus !== 'ALL' && targetStatus !== 'TODOS')
+        ? rosterList.find(r => r.status === targetStatus) || rosterList[0]
+        : rosterList.find(r => r.status === 'ACTIVE') || rosterList[0];
 
       return {
         ...playerData,
         club_name: clubObj?.name || null,
         club_folio: rosterObj?.club_folio ?? p.club_folio ?? null,
-        status: rosterObj?.status || status || 'ACTIVE',
+        status: rosterObj?.status || 'ACTIVE',
       };
     });
 
@@ -406,7 +412,17 @@ export class PlayersSpecialist extends Skill {
     });
   }
 
-  async _updatePlayer({ playerId, ...updates }, db) {
+  async _updatePlayer({ playerId, ...updates }, db, userId) {
+    const { data: existing } = await db.from('lg_players').select('club_id').eq('id', playerId).maybeSingle();
+    if (!existing) {
+      return createSkillResult({ success: false, errorCode: 'PLAYER_NOT_FOUND', errorMessage: 'Jugador no encontrado' });
+    }
+
+    const accessError = await assertClubAccess(existing.club_id, userId, db);
+    if (accessError) {
+      return createSkillResult({ success: false, errorCode: accessError, errorMessage: 'No tienes permisos para editar jugadores de este club' });
+    }
+
     const allowed = [
       'first_name', 'last_name', 'birth_date', 'address',
       'phone', 'email', 'position', 'category_id', 'photo_url',
@@ -434,7 +450,7 @@ export class PlayersSpecialist extends Skill {
   }
 
   async _updateStatus({ playerId, clubId, status }, db, userId) {
-    const accessError = await this._assertClubAccess(clubId, userId, db);
+    const accessError = await assertClubAccess(clubId, userId, db);
     if (accessError) {
       return createSkillResult({ success: false, errorCode: accessError, errorMessage: 'No tienes permisos para modificar jugadores en este club' });
     }
@@ -472,7 +488,7 @@ export class PlayersSpecialist extends Skill {
       originClubId = activeRoster.club_id;
     }
 
-    const accessError = await this._assertClubAccess(originClubId, userId, db);
+    const accessError = await assertClubAccess(originClubId, userId, db);
     if (accessError) {
       return createSkillResult({ success: false, errorCode: accessError, errorMessage: 'No tienes permisos para traspasar jugadores de este club' });
     }
