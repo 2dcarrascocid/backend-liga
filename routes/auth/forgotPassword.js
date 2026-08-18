@@ -4,9 +4,6 @@ import { handleError } from '../../utils/errors.js'
 import { validateBody } from '../../utils/validator.js'
 import { validateApiKey } from '../../utils/security.js'
 import { sendPasswordResetEmail } from '../../utils/mailer.js'
-import dotenv from 'dotenv'
-
-dotenv.config()
 
 export const handler = async (event) => {
   try {

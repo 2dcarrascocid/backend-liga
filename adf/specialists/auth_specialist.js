@@ -28,9 +28,6 @@ import { createSkillResult } from '../contracts/task_schema.js';
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 import { sendPasswordResetEmail } from '../../utils/mailer.js';
-import dotenv from 'dotenv';
-
-dotenv.config();
 
 const SPORTS_CATALOG = [
   { name: 'Futbol', slug: 'futbol' },
