@@ -11,10 +11,27 @@
  *   - Delegar los algoritmos de sorteo a lib/fixture_generator.js (puro)
  *   - Delegar la propagación de ganador/perdedor de llave a lib/bracket_propagation.js
  *   - Dejar la logística y el resultado de cada partido a matches_specialist
+ *   - Exigir season_id en CREATE_TOURNAMENT (todo torneo pertenece a una Temporada,
+ *     gestionada por SeasonsSpecialist / lg_seasons) y validar que type sea
+ *     AMISTOSO u OFICIAL
  *
  * DON'T:
  *   - No gestionar logística ni resultados de partidos individuales — eso es de "matches"
- *   - No gestionar costos — eso es de "tournament_costs"
+ *   - No gestionar gastos del organizador (arbitraje/cancha) — eso es de "tournament_costs"
+ *   - No gestionar temporadas — eso es de "seasons" (SeasonsSpecialist)
+ *
+ * Reglas de inscripción (REGISTER_TEAM) y cobros:
+ *   - Solo puede inscribir quien tenga acceso al club dueño de la serie
+ *     (assertClubAccess): admin de organización → cualquier club; admin de
+ *     club → solo el suyo
+ *   - El torneo debe estar en status REGISTRATION ("torneos disponibles")
+ *   - Si quien inscribe NO es admin de organización, el torneo debe
+ *     pertenecer a la temporada activa (lg_seasons.active = true)
+ *   - Cada inscripción exitosa genera 1 cobro INSCRIPCION en el libro
+ *     (lib/ledger.js), y cada fecha generada por el fixture genera 1 cobro
+ *     FECHA por cada serie ACTIVE inscrita — ver lib/ledger.js, dominio
+ *     separado de "tournament_costs" (eso es gasto del organizador; esto es
+ *     lo que el club le debe a la liga)
  *
  * Capabilities:
  *   LIST_TOURNAMENTS | GET_TOURNAMENT | CREATE_TOURNAMENT | UPDATE_TOURNAMENT | DELETE_TOURNAMENT
@@ -28,6 +45,8 @@ import { createSkillResult } from '../contracts/task_schema.js';
 import { encodeNext, decodeNext } from '../../utils/pagination.js';
 import { generateRoundRobin, generateGroups, generateKnockoutBracket } from './lib/fixture_generator.js';
 import { propagateWinner } from './lib/bracket_propagation.js';
+import { assertClubAccess, isOrgAdmin } from './lib/club_access.js';
+import { createInscriptionCharge, createMatchdayCharges, clearUnpaidMatchdayCharges } from './lib/ledger.js';
 
 const CAPABILITIES = [
   'LIST_TOURNAMENTS', 'GET_TOURNAMENT', 'CREATE_TOURNAMENT', 'UPDATE_TOURNAMENT', 'DELETE_TOURNAMENT',
@@ -36,10 +55,13 @@ const CAPABILITIES = [
   'GET_STANDINGS',
 ];
 
+const TOURNAMENT_TYPES = ['AMISTOSO', 'OFICIAL'];
+
 const TOURNAMENT_UPDATABLE_FIELDS = {
   categoryId: 'category_id',
+  seasonId: 'season_id',
   name: 'name',
-  season: 'season',
+  type: 'type',
   status: 'status',
   startDate: 'start_date',
   endDate: 'end_date',
@@ -87,6 +109,7 @@ export class TournamentsSpecialist extends Skill {
         { name: 'operation', required: true, type: 'string' },
         { name: 'payload', required: true, type: 'object' },
         { name: 'db', required: true, type: 'object' },
+        { name: 'userId', required: false, type: 'string' },
       ],
       output: [
         { name: 'tournament', type: 'object' },
@@ -111,12 +134,14 @@ export class TournamentsSpecialist extends Skill {
         'CREATE_TOURNAMENT valida orgId/name/format',
         'GENERATE_FIXTURE no duplica fixture ya generado',
         'GENERATE_KNOCKOUT_FROM_GROUPS siembra desde vw_tournament_standings',
+        'REGISTER_TEAM valida assertClubAccess, status REGISTRATION y temporada activa (si no es admin de org)',
+        'Toda generación de matchdays llama _generateMatchdayCharges sin duplicar cobros existentes',
       ],
     };
   }
 
   async execute(task) {
-    const { operation, payload, db } = task.input;
+    const { operation, payload, db, userId } = task.input;
 
     if (!this.capabilities.includes(operation)) {
       return createSkillResult({
@@ -134,8 +159,8 @@ export class TournamentsSpecialist extends Skill {
         case 'UPDATE_TOURNAMENT': return this._updateTournament(payload, db);
         case 'DELETE_TOURNAMENT': return this._deleteTournament(payload, db);
         case 'LIST_TOURNAMENT_TEAMS': return this._listTeams(payload, db);
-        case 'REGISTER_TEAM': return this._registerTeam(payload, db);
-        case 'UNREGISTER_TEAM': return this._unregisterTeam(payload, db);
+        case 'REGISTER_TEAM': return this._registerTeam(payload, db, userId);
+        case 'UNREGISTER_TEAM': return this._unregisterTeam(payload, db, userId);
         case 'LIST_STAGES': return this._listStages(payload, db);
         case 'GENERATE_FIXTURE': return this._generateFixture(payload, db);
         case 'GENERATE_KNOCKOUT_FROM_GROUPS': return this._generateKnockoutFromGroups(payload, db);
@@ -153,7 +178,7 @@ export class TournamentsSpecialist extends Skill {
 
   // ── CRUD Torneo ─────────────────────────────────────────────────────────
 
-  async _listTournaments({ orgId, status, categoryId, limit = 20, nextToken }, db) {
+  async _listTournaments({ orgId, status, categoryId, seasonId, type, limit = 20, nextToken }, db) {
     if (!orgId) {
       return createSkillResult({ success: false, errorCode: 'MISSING_ORG', errorMessage: 'org_id es requerido' });
     }
@@ -169,9 +194,11 @@ export class TournamentsSpecialist extends Skill {
       effectiveLimit = decoded.limit;
     }
 
-    let query = db.from('lg_tournaments').select('*', { count: 'exact' }).eq('org_id', orgId);
+    let query = db.from('lg_tournaments').select('*, season:lg_seasons(id,name,year)', { count: 'exact' }).eq('org_id', orgId);
     if (status) query = query.eq('status', status);
     if (categoryId) query = query.eq('category_id', categoryId);
+    if (seasonId) query = query.eq('season_id', seasonId);
+    if (type) query = query.eq('type', type);
     query = query.order('created_at', { ascending: false }).range(offset, offset + effectiveLimit - 1);
 
     const { data: tournaments, error, count } = await query;
@@ -188,7 +215,7 @@ export class TournamentsSpecialist extends Skill {
 
   async _getTournament({ tournamentId }, db) {
     const { data: tournament, error } = await db
-      .from('lg_tournaments').select('*').eq('id', tournamentId).maybeSingle();
+      .from('lg_tournaments').select('*, season:lg_seasons(id,name,year)').eq('id', tournamentId).maybeSingle();
 
     if (error || !tournament) {
       return createSkillResult({ success: false, errorCode: 'TOURNAMENT_NOT_FOUND', errorMessage: 'Torneo no encontrado' });
@@ -201,12 +228,23 @@ export class TournamentsSpecialist extends Skill {
   }
 
   async _createTournament(payload, db) {
-    const { orgId, name, format } = payload;
-    if (!orgId || !name || !format) {
-      return createSkillResult({ success: false, errorCode: 'MISSING_FIELDS', errorMessage: 'org_id, name y format son requeridos' });
+    const { orgId, name, format, seasonId } = payload;
+    if (!orgId || !name || !format || !seasonId) {
+      return createSkillResult({ success: false, errorCode: 'MISSING_FIELDS', errorMessage: 'org_id, name, format y seasonId son requeridos' });
     }
     if (!['ROUND_ROBIN', 'KNOCKOUT', 'GROUPS_KNOCKOUT'].includes(format)) {
       return createSkillResult({ success: false, errorCode: 'INVALID_FORMAT', errorMessage: `Formato inválido: "${format}"` });
+    }
+
+    const type = payload.type ?? 'OFICIAL';
+    if (!TOURNAMENT_TYPES.includes(type)) {
+      return createSkillResult({ success: false, errorCode: 'INVALID_TYPE', errorMessage: `Tipo de torneo inválido: "${type}"` });
+    }
+
+    const { data: season } = await db
+      .from('lg_seasons').select('id').eq('id', seasonId).eq('org_id', orgId).maybeSingle();
+    if (!season) {
+      return createSkillResult({ success: false, errorCode: 'SEASON_NOT_FOUND', errorMessage: 'La temporada indicada no existe en esta organización' });
     }
 
     const { data: tournament, error } = await db
@@ -214,8 +252,9 @@ export class TournamentsSpecialist extends Skill {
       .insert({
         org_id: orgId,
         category_id: payload.categoryId ?? null,
+        season_id: seasonId,
         name,
-        season: payload.season ?? null,
+        type,
         format,
         status: payload.status ?? 'DRAFT',
         start_date: payload.startDate ?? null,
@@ -250,6 +289,9 @@ export class TournamentsSpecialist extends Skill {
     }
     if (Object.keys(patch).length === 0) {
       return createSkillResult({ success: false, errorCode: 'NO_FIELDS', errorMessage: 'No hay campos válidos para actualizar' });
+    }
+    if (patch.type !== undefined && !TOURNAMENT_TYPES.includes(patch.type)) {
+      return createSkillResult({ success: false, errorCode: 'INVALID_TYPE', errorMessage: `Tipo de torneo inválido: "${patch.type}"` });
     }
     patch.updated_at = new Date().toISOString();
 
@@ -290,9 +332,40 @@ export class TournamentsSpecialist extends Skill {
     return createSkillResult({ success: true, data: { teams } });
   }
 
-  async _registerTeam({ tournamentId, seriesId, groupName, seed }, db) {
+  async _registerTeam({ tournamentId, seriesId, groupName, seed }, db, userId) {
     if (!tournamentId || !seriesId) {
       return createSkillResult({ success: false, errorCode: 'MISSING_FIELDS', errorMessage: 'tournamentId y seriesId son requeridos' });
+    }
+
+    const { data: series } = await db
+      .from('lg_club_series').select('id, club_id').eq('id', seriesId).maybeSingle();
+    if (!series) {
+      return createSkillResult({ success: false, errorCode: 'SERIES_NOT_FOUND', errorMessage: 'Serie no encontrada' });
+    }
+
+    const accessError = await assertClubAccess(series.club_id, userId, db);
+    if (accessError) {
+      return createSkillResult({ success: false, errorCode: accessError, errorMessage: 'No tienes permisos para inscribir series de este club' });
+    }
+
+    const { data: tournament } = await db
+      .from('lg_tournaments').select('id, org_id, season_id, status').eq('id', tournamentId).maybeSingle();
+    if (!tournament) {
+      return createSkillResult({ success: false, errorCode: 'TOURNAMENT_NOT_FOUND', errorMessage: 'Torneo no encontrado' });
+    }
+    if (tournament.status !== 'REGISTRATION') {
+      return createSkillResult({ success: false, errorCode: 'TOURNAMENT_NOT_OPEN', errorMessage: 'El torneo no está abierto a inscripciones' });
+    }
+
+    // Admin de club (no de organización): solo puede inscribir a torneos de la temporada activa.
+    const callerIsOrgAdmin = await isOrgAdmin(userId, tournament.org_id, db);
+    if (!callerIsOrgAdmin) {
+      const { data: season } = tournament.season_id
+        ? await db.from('lg_seasons').select('active').eq('id', tournament.season_id).maybeSingle()
+        : { data: null };
+      if (!season?.active) {
+        return createSkillResult({ success: false, errorCode: 'SEASON_NOT_ACTIVE', errorMessage: 'Solo se puede inscribir a torneos de la temporada activa' });
+      }
     }
 
     const { data: team, error } = await db
@@ -312,10 +385,38 @@ export class TournamentsSpecialist extends Skill {
       }
       return createSkillResult({ success: false, errorCode: 'REGISTER_TEAM_FAILED', errorMessage: error.message });
     }
+
+    const chargeResult = await createInscriptionCharge({
+      orgId: tournament.org_id,
+      clubId: series.club_id,
+      seriesId,
+      tournamentId,
+      seasonId: tournament.season_id,
+    }, db);
+    if (chargeResult.error) {
+      // La inscripción ya quedó registrada — un problema del libro no debe revertirla.
+      console.error('[tournaments] createInscriptionCharge failed:', chargeResult.error.message);
+    }
+
     return createSkillResult({ success: true, data: { team } });
   }
 
-  async _unregisterTeam({ tournamentId, teamId }, db) {
+  async _unregisterTeam({ tournamentId, teamId }, db, userId) {
+    const { data: existingTeam } = await db
+      .from('lg_tournament_teams').select('series_id').eq('id', teamId).eq('tournament_id', tournamentId).maybeSingle();
+    if (!existingTeam) {
+      return createSkillResult({ success: false, errorCode: 'TEAM_NOT_FOUND', errorMessage: 'Inscripción no encontrada' });
+    }
+
+    const { data: series } = await db
+      .from('lg_club_series').select('club_id').eq('id', existingTeam.series_id).maybeSingle();
+    if (series) {
+      const accessError = await assertClubAccess(series.club_id, userId, db);
+      if (accessError) {
+        return createSkillResult({ success: false, errorCode: accessError, errorMessage: 'No tienes permisos para retirar series de este club' });
+      }
+    }
+
     const { error } = await db
       .from('lg_tournament_teams').delete().eq('id', teamId).eq('tournament_id', tournamentId);
     if (error) {
@@ -354,7 +455,10 @@ export class TournamentsSpecialist extends Skill {
       });
     }
 
+    let oldMatchdayIds = [];
     if (existingMatches > 0 && force) {
+      const { data: oldMatchdays } = await db.from('lg_matchdays').select('id').eq('tournament_id', tournamentId);
+      oldMatchdayIds = (oldMatchdays ?? []).map((m) => m.id);
       await db.from('lg_tournament_stages').delete().eq('tournament_id', tournamentId);
     }
 
@@ -387,7 +491,41 @@ export class TournamentsSpecialist extends Skill {
 
     await db.from('lg_tournaments').update({ status: 'IN_PROGRESS', updated_at: new Date().toISOString() }).eq('id', tournamentId);
 
+    if (oldMatchdayIds.length > 0) await clearUnpaidMatchdayCharges(oldMatchdayIds, db);
+    await this._generateMatchdayCharges(tournamentId, tournament.org_id, tournament.season_id, db);
+
     return createSkillResult({ success: true, data: { stages: result.stages, matchesCreated: result.matchesCreated } });
+  }
+
+  /**
+   * Genera el cobro FECHA (lib/ledger.js) para cada matchday del torneo que
+   * todavía no tenga cobro asociado — cubre GENERATE_FIXTURE (primera vez y
+   * regeneración con force), GENERATE_KNOCKOUT_FROM_GROUPS y GENERATE_CONSOLATION
+   * por igual, sin duplicar cobros de matchdays ya cobrados.
+   */
+  async _generateMatchdayCharges(tournamentId, orgId, seasonId, db, onlySeriesIds = null) {
+    try {
+      const { data: chargedRows } = await db
+        .from('lg_ledger_entries')
+        .select('matchday_id')
+        .eq('tournament_id', tournamentId)
+        .eq('category', 'FECHA')
+        .not('matchday_id', 'is', null);
+      const chargedIds = new Set((chargedRows ?? []).map((r) => r.matchday_id));
+
+      const { data: matchdays } = await db
+        .from('lg_matchdays').select('id, date').eq('tournament_id', tournamentId);
+
+      const pending = (matchdays ?? []).filter((m) => !chargedIds.has(m.id));
+      for (const md of pending) {
+        const result = await createMatchdayCharges(
+          { orgId, tournamentId, seasonId, matchdayId: md.id, matchdayDate: md.date, onlySeriesIds }, db
+        );
+        if (result.error) console.error('[tournaments] createMatchdayCharges failed:', result.error.message);
+      }
+    } catch (err) {
+      console.error('[tournaments] _generateMatchdayCharges failed:', err.message);
+    }
   }
 
   /** Todos contra Todos: una sola fase GROUP con round robin entre todos los inscritos. */
@@ -672,6 +810,8 @@ export class TournamentsSpecialist extends Skill {
         .eq('tournament_id', tournamentId).eq('series_id', seriesId);
     }
 
+    await this._generateMatchdayCharges(tournamentId, tournament.org_id, tournament.season_id, db);
+
     return createSkillResult({ success: true, data: { stage: result.stages[0], matchesCreated: result.matchesCreated, advanced: seededTeamIds, eliminated: eliminatedSeriesIds } });
   }
 
@@ -714,6 +854,8 @@ export class TournamentsSpecialist extends Skill {
     const effectiveStart = tournament.start_date ?? new Date().toISOString().slice(0, 10);
     const matchesCreated = await this._insertRoundRobinRounds(db, tournament, stage, rounds, null, effectiveStart, 7);
 
+    await this._generateMatchdayCharges(tournamentId, tournament.org_id, tournament.season_id, db, seriesIds);
+
     return createSkillResult({ success: true, data: { stage, matchesCreated } });
   }
 
@@ -726,12 +868,89 @@ export class TournamentsSpecialist extends Skill {
     let query = db.from('vw_tournament_standings').select('*').eq('tournament_id', tournamentId);
     if (stageId) query = query.eq('stage_id', stageId);
     if (groupName) query = query.eq('group_name', groupName);
-    query = query.order('stage_id', { ascending: true }).order('group_name', { ascending: true }).order('position', { ascending: true });
 
-    const { data: standings, error } = await query;
+    const { data: playedStandings, error } = await query;
     if (error) {
       return createSkillResult({ success: false, errorCode: 'STANDINGS_FAILED', errorMessage: error.message });
     }
+
+    const standings = await this._fillZeroStandings(tournamentId, stageId, groupName, playedStandings || [], db);
+
+    standings.sort((a, b) =>
+      (a.stage_id || '').localeCompare(b.stage_id || '')
+      || (a.group_name || '').localeCompare(b.group_name || '')
+      || b.points - a.points
+      || b.goal_diff - a.goal_diff
+      || b.goals_for - a.goals_for
+    );
+
+    let position = 0;
+    let lastKey = null;
+    for (const row of standings) {
+      const key = `${row.stage_id}-${row.group_name || '_'}`;
+      position = key === lastKey ? position + 1 : 1;
+      lastKey = key;
+      row.position = position;
+    }
+
     return createSkillResult({ success: true, data: { standings } });
+  }
+
+  /**
+   * Completa la tabla de posiciones con los equipos inscritos que todavía
+   * no tienen partidos finalizados (0 jugados, 0 puntos), para que la
+   * tabla muestre desde la fecha 1 a todos los inscritos, no solo a los
+   * que ya sumaron. Solo aplica a fases tipo GROUP (round robin/grupos) —
+   * una fase KNOCKOUT no tiene "tabla de posiciones" en ese sentido.
+   */
+  async _fillZeroStandings(tournamentId, stageId, groupName, playedStandings, db) {
+    let stagesQuery = db
+      .from('lg_tournament_stages')
+      .select('id')
+      .eq('tournament_id', tournamentId)
+      .eq('stage_type', 'GROUP');
+    if (stageId) stagesQuery = stagesQuery.eq('id', stageId);
+
+    const { data: groupStages, error: stagesErr } = await stagesQuery;
+    if (stagesErr) {
+      console.error('_fillZeroStandings: error consultando lg_tournament_stages:', stagesErr.message);
+      return playedStandings;
+    }
+    if (!groupStages || groupStages.length === 0) return playedStandings;
+
+    const { data: teams, error: teamsErr } = await db
+      .from('lg_tournament_teams')
+      .select('series_id, group_name, series:lg_club_series(id,name,club:lg_clubs(id,name))')
+      .eq('tournament_id', tournamentId);
+    if (teamsErr) {
+      console.error('_fillZeroStandings: error consultando lg_tournament_teams:', teamsErr.message);
+      return playedStandings;
+    }
+    if (!teams || teams.length === 0) return playedStandings;
+
+    const present = new Set(playedStandings.map((s) => `${s.stage_id}-${s.series_id}`));
+    const zeroRows = [];
+
+    for (const stage of groupStages) {
+      for (const team of teams) {
+        if (groupName && team.group_name !== groupName) continue;
+        if (present.has(`${stage.id}-${team.series_id}`)) continue;
+
+        zeroRows.push({
+          tournament_id: tournamentId,
+          stage_id: stage.id,
+          group_name: team.group_name || null,
+          series_id: team.series_id,
+          series_name: team.series?.name || null,
+          club_id: team.series?.club?.id || null,
+          club_name: team.series?.club?.name || null,
+          played: 0, won: 0, drawn: 0, lost: 0,
+          goals_for: 0, goals_against: 0, goal_diff: 0, points: 0,
+          position: null,
+        });
+      }
+    }
+
+    return [...playedStandings, ...zeroRows];
   }
 }

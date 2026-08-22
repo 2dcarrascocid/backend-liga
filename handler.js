@@ -135,6 +135,11 @@ const ROUTES = [
     input: { clubId: pp.clubId },
   })),
 
+  route('GET', '/clubs/{clubId}/kpis', (pp) => ({
+    type: 'GET_CLUB_KPIS', domain: 'clubs',
+    input: { clubId: pp.clubId },
+  })),
+
   route('PATCH', '/clubs/{clubId}', (pp, body) => ({
     type: 'UPDATE_CLUB', domain: 'clubs',
     input: { clubId: pp.clubId, ...body },
@@ -274,6 +279,11 @@ const ROUTES = [
       limit:      qs.limit ? parseInt(qs.limit, 10) : 10,
       next_token: qs.next_token,
     },
+  })),
+
+  route('GET', '/clubs/{clubId}/available-folios', (pp) => ({
+    type: 'LIST_AVAILABLE_FOLIOS', domain: 'players',
+    input: { clubId: pp.clubId },
   })),
 
   route('PATCH', '/clubs/{clubId}/players/{playerId}/status', (pp, body) => ({
@@ -606,6 +616,87 @@ const ROUTES = [
     input: { bookingId: pp.bookingId },
   })),
 
+  // ── Temporadas ────────────────────────────────────────────────────────────
+
+  route('GET', '/seasons', (_pp, _body, qs) => ({
+    type: 'LIST_SEASONS', domain: 'seasons',
+    input: { orgId: qs.org_id, active: qs.active },
+  })),
+
+  route('POST', '/seasons', (_pp, body) => ({
+    type: 'CREATE_SEASON', domain: 'seasons',
+    input: { orgId: body.org_id, name: body.name, year: body.year !== undefined ? Number(body.year) : undefined, active: body.active },
+  })),
+
+  route('PATCH', '/seasons/{seasonId}', (pp, body) => ({
+    type: 'UPDATE_SEASON', domain: 'seasons',
+    input: { seasonId: pp.seasonId, name: body.name, year: body.year !== undefined ? Number(body.year) : undefined, active: body.active },
+  })),
+
+  route('DELETE', '/seasons/{seasonId}', (pp, _body, qs) => ({
+    type: 'DELETE_SEASON', domain: 'seasons',
+    input: { seasonId: pp.seasonId, orgId: qs.org_id },
+  })),
+
+  // ── Finanzas de Clubes (mantenedor de costos + libro de ingresos/egresos) ──
+
+  route('GET', '/seasons/{seasonId}/cost-catalog', (pp) => ({
+    type: 'LIST_COST_CATALOG', domain: 'club_finance',
+    input: { seasonId: pp.seasonId },
+  })),
+
+  route('PUT', '/seasons/{seasonId}/cost-catalog', (pp, body) => ({
+    type: 'UPSERT_COST_CATALOG', domain: 'club_finance',
+    input: {
+      orgId: body.org_id,
+      seasonId: pp.seasonId,
+      inscriptionFee: body.inscription_fee !== undefined ? Number(body.inscription_fee) : undefined,
+      matchdayFee: body.matchday_fee !== undefined ? Number(body.matchday_fee) : undefined,
+    },
+  })),
+
+  route('GET', '/ledger-entries', (_pp, _body, qs) => ({
+    type: 'LIST_LEDGER_ENTRIES', domain: 'club_finance',
+    input: {
+      orgId: qs.org_id,
+      clubId: qs.club_id,
+      seriesId: qs.series_id,
+      tournamentId: qs.tournament_id,
+      category: qs.category,
+      limit: qs.limit ? parseInt(qs.limit, 10) : 50,
+    },
+  })),
+
+  route('POST', '/ledger-entries', (_pp, body) => ({
+    type: 'CREATE_LEDGER_ENTRY', domain: 'club_finance',
+    input: {
+      orgId: body.org_id,
+      clubId: body.club_id,
+      seriesId: body.series_id,
+      tournamentId: body.tournament_id,
+      category: body.category,
+      direction: body.direction,
+      amount: body.amount !== undefined ? Number(body.amount) : undefined,
+      description: body.description,
+      dueDate: body.due_date,
+    },
+  })),
+
+  route('POST', '/ledger-entries/{entryId}/payment', (pp, body) => ({
+    type: 'RECORD_PAYMENT', domain: 'club_finance',
+    input: { entryId: pp.entryId, amount: body.amount !== undefined ? Number(body.amount) : undefined },
+  })),
+
+  route('GET', '/clubs/{clubId}/payment-status', (pp) => ({
+    type: 'GET_CLUB_PAYMENT_STATUS', domain: 'club_finance',
+    input: { clubId: pp.clubId },
+  })),
+
+  route('GET', '/orgs/{orgId}/payment-stats', (pp) => ({
+    type: 'GET_PAYMENT_STATS', domain: 'club_finance',
+    input: { orgId: pp.orgId },
+  })),
+
   // ── Torneos ───────────────────────────────────────────────────────────────
 
   route('GET', '/tournaments', (_pp, _body, qs) => ({
@@ -614,6 +705,8 @@ const ROUTES = [
       orgId:      qs.org_id,
       status:     qs.status,
       categoryId: qs.category_id,
+      seasonId:   qs.season_id,
+      type:       qs.type,
       limit:      qs.limit ? parseInt(qs.limit, 10) : 20,
       nextToken:  qs.next_token,
     },
@@ -624,8 +717,9 @@ const ROUTES = [
     input: {
       orgId:                 body.org_id,
       categoryId:            body.category_id,
+      seasonId:              body.season_id,
       name:                  body.name,
-      season:                body.season,
+      type:                  body.type,
       format:                body.format,
       status:                body.status,
       startDate:             body.start_date,
@@ -702,6 +796,16 @@ const ROUTES = [
   route('GET', '/tournaments/{tournamentId}/standings', (pp, _body, qs) => ({
     type: 'GET_STANDINGS', domain: 'tournaments',
     input: { tournamentId: pp.tournamentId, stageId: qs.stage_id, groupName: qs.group_name },
+  })),
+
+  route('GET', '/tournaments/{tournamentId}/top-scorers', (pp, _body, qs) => ({
+    type: 'GET_TOP_SCORERS', domain: 'matches',
+    input: { tournamentId: pp.tournamentId, limit: qs.limit ? parseInt(qs.limit, 10) : undefined },
+  })),
+
+  route('GET', '/tournaments/{tournamentId}/fairplay', (pp) => ({
+    type: 'GET_FAIRPLAY_RANKING', domain: 'matches',
+    input: { tournamentId: pp.tournamentId },
   })),
 
   // ── Partidos ──────────────────────────────────────────────────────────────

@@ -16,7 +16,7 @@
  * Capabilities:
  *   CREATE_CLUB | GET_CLUBS | GET_CLUB | UPDATE_CLUB |
  *   ADD_CLUB_USER | REMOVE_CLUB_USER |
- *   ADD_ROSTER | GET_ROSTER | UPDATE_ROSTER
+ *   ADD_ROSTER | GET_ROSTER | UPDATE_ROSTER | GET_CLUB_KPIS
  *
  * Reglas de nómina (folio):
  *   - Cada club tiene folio_start, folio_end, max_players
@@ -24,6 +24,8 @@
  *   - folio_start y folio_end son ingresados por el admin al CREAR el club
  *   - El backend valida que el rango no se superponga con otros clubes de la org
  *   - active_players_count se obtiene con query separada (no alias PostgREST)
+ *   - GET_ROSTER decora cada fila con is_veteran/club_folio_display (ver lib/veteran_folio.js);
+ *     la liberación real del folio numérico se resuelve en PlayersSpecialist._resolveClubFolio
  *
  * Checklist:
  *   [ ] ¿Se verificó membresía de org antes de mutaciones?
@@ -38,13 +40,18 @@ import { createSkillResult } from '../contracts/task_schema.js';
 import crypto from 'crypto';
 import { sendClubAdminInviteEmail } from '../../utils/mailer.js';
 import { assertClubAccess, getAccessibleClubIds } from './lib/club_access.js';
+import { decorateFolio, isVeteranByBirthDate } from './lib/veteran_folio.js';
 
 const CAPABILITIES = [
   'CREATE_CLUB', 'GET_CLUBS', 'GET_CLUB', 'UPDATE_CLUB',
   'ADD_CLUB_USER', 'REMOVE_CLUB_USER',
   'ADD_ROSTER', 'GET_ROSTER', 'UPDATE_ROSTER',
   'INVITE_CLUB_ADMIN', 'GET_CLUB_ADMINS', 'REMOVE_CLUB_ADMIN',
+  'GET_CLUB_KPIS',
 ];
+
+const TRANSFER_PENDING_STATUSES  = ['PENDING', 'ENVIADO'];
+const TRANSFER_APPROVED_STATUSES = ['APPROVED', 'ACEPTADO'];
 
 export class ClubsSpecialist extends Skill {
   constructor() {
@@ -110,6 +117,7 @@ export class ClubsSpecialist extends Skill {
         case 'INVITE_CLUB_ADMIN':  return this._inviteClubAdmin(payload, db, userId);
         case 'GET_CLUB_ADMINS':    return this._getClubAdmins(payload, db);
         case 'REMOVE_CLUB_ADMIN':  return this._removeClubAdmin(payload, db, userId);
+        case 'GET_CLUB_KPIS':      return this._getClubKpis(payload, db, userId);
       }
     } catch (err) {
       return createSkillResult({
@@ -263,6 +271,118 @@ export class ClubsSpecialist extends Skill {
     return createSkillResult({ success: true, data: { club: { ...club, active_players_count: count ?? 0 } } });
   }
 
+  /**
+   * KPIs para el dashboard de detalle de club:
+   *   - registered_players: jugadores con roster ACTIVE
+   *   - available_folios: folios libres en [folio_start, folio_end] (excluye veteranos, ver lib/veteran_folio.js)
+   *   - expelled_players / yellow_card_players: jugadores distintos con al menos una RED_CARD / YELLOW_CARD
+   *     en lg_match_events, unido vía series_id → lg_club_series.club_id (lg_matches no tiene club_id directo)
+   *   - transferred_players / pending_transfers: lg_transfers donde el club participa como origen o destino
+   *   - active_series_this_year: series activas del club con inscripción ACTIVE en un torneo del año en curso
+   *     (torneo "del año" = lg_seasons.year del torneo, o start_date como respaldo si no tiene temporada asignada)
+   */
+  async _getClubKpis({ clubId }, db, userId) {
+    const accessError = await assertClubAccess(clubId, userId, db);
+    if (accessError) {
+      return createSkillResult({ success: false, errorCode: accessError, errorMessage: 'No tienes permisos para ver los KPIs de este club' });
+    }
+
+    const { data: club, error: clubErr } = await db
+      .from('lg_clubs')
+      .select('id, folio_start, folio_end')
+      .eq('id', clubId)
+      .single();
+
+    if (clubErr || !club) {
+      return createSkillResult({ success: false, errorCode: 'CLUB_NOT_FOUND', errorMessage: 'Club no encontrado' });
+    }
+
+    const folioStart  = club.folio_start ?? 1;
+    const folioEnd    = club.folio_end   ?? 70;
+    const totalFolios = Math.max(0, folioEnd - folioStart + 1);
+
+    const [
+      { count: registeredPlayers },
+      { data: activeRosterRows },
+      { data: cardEvents },
+      { count: transferredCount },
+      { count: pendingCount },
+      { data: seriesRows },
+    ] = await Promise.all([
+      db.from('lg_club_rosters')
+        .select('id', { count: 'exact', head: true })
+        .eq('club_id', clubId)
+        .eq('status', 'ACTIVE'),
+
+      db.from('lg_club_rosters')
+        .select('club_folio, player:lg_players!inner(birth_date)')
+        .eq('club_id', clubId)
+        .eq('status', 'ACTIVE')
+        .not('club_folio', 'is', null),
+
+      db.from('lg_match_events')
+        .select('event_type, player_id, series:lg_club_series!inner(club_id)')
+        .eq('series.club_id', clubId)
+        .in('event_type', ['RED_CARD', 'YELLOW_CARD']),
+
+      db.from('lg_transfers')
+        .select('id', { count: 'exact', head: true })
+        .or(`from_club_id.eq.${clubId},to_club_id.eq.${clubId}`)
+        .in('status', TRANSFER_APPROVED_STATUSES),
+
+      db.from('lg_transfers')
+        .select('id', { count: 'exact', head: true })
+        .or(`from_club_id.eq.${clubId},to_club_id.eq.${clubId}`)
+        .in('status', TRANSFER_PENDING_STATUSES),
+
+      db.from('lg_club_series')
+        .select('id, tournament_teams:lg_tournament_teams(status, tournament:lg_tournaments(start_date, season:lg_seasons(year)))')
+        .eq('club_id', clubId)
+        .eq('active', true),
+    ]);
+
+    const usedFolios = new Set(
+      (activeRosterRows ?? [])
+        .filter(r => !isVeteranByBirthDate(r.player?.birth_date))
+        .map(r => r.club_folio)
+    );
+    const availableFolios = Math.max(0, totalFolios - usedFolios.size);
+
+    const expelledPlayers = new Set(
+      (cardEvents ?? []).filter(e => e.event_type === 'RED_CARD' && e.player_id).map(e => e.player_id)
+    ).size;
+    const yellowCardPlayers = new Set(
+      (cardEvents ?? []).filter(e => e.event_type === 'YELLOW_CARD' && e.player_id).map(e => e.player_id)
+    ).size;
+
+    const currentYear = new Date().getFullYear();
+    const isCurrentYearTournament = (t) => {
+      if (!t) return false;
+      if (t.season?.year) return t.season.year === currentYear;
+      if (t.start_date) return new Date(t.start_date).getFullYear() === currentYear;
+      return false;
+    };
+    const activeSeriesThisYear = (seriesRows ?? []).filter(s =>
+      (s.tournament_teams ?? []).some(tt => tt.status === 'ACTIVE' && isCurrentYearTournament(tt.tournament))
+    ).length;
+
+    return createSkillResult({
+      success: true,
+      data: {
+        kpis: {
+          registered_players:     registeredPlayers ?? 0,
+          available_folios:       availableFolios,
+          total_folios:           totalFolios,
+          expelled_players:       expelledPlayers,
+          yellow_card_players:    yellowCardPlayers,
+          transferred_players:    transferredCount ?? 0,
+          pending_transfers:      pendingCount ?? 0,
+          active_series_this_year: activeSeriesThisYear,
+        },
+      },
+    });
+  }
+
   async _updateClub({ clubId, ...updates }, db, userId) {
     const accessError = await assertClubAccess(clubId, userId, db);
     if (accessError) {
@@ -380,7 +500,12 @@ export class ClubsSpecialist extends Skill {
     const { data: roster, error } = await query;
     if (error) return createSkillResult({ success: false, errorCode: 'GET_ROSTER_FAILED', errorMessage: error.message });
 
-    return createSkillResult({ success: true, data: { roster } });
+    const decorated = (roster ?? []).map(row => ({
+      ...row,
+      ...decorateFolio(row.club_folio, row.player?.birth_date),
+    }));
+
+    return createSkillResult({ success: true, data: { roster: decorated } });
   }
 
   async _updateRoster({ rosterId, status, validTo }, db, userId) {

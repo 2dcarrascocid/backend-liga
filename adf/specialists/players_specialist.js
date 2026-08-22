@@ -19,13 +19,16 @@
  * Reglas de folio:
  *   - El club define folio_start, folio_end, max_players en lg_clubs
  *   - Solo los rosters ACTIVE cuentan como "folio ocupado" — los INACTIVE liberan su folio
+ *   - Los rosters ACTIVE de jugadores veteranos (55+ años, ver lib/veteran_folio.js) también
+ *     liberan su folio numérico — puede reasignarse a otro jugador del club
  *   - Al crear jugador: buscar primer folio libre en [folio_start, folio_end] entre rosters ACTIVE
- *   - Si se provee club_folio manual: validar rango y que no esté en uso en roster ACTIVE
+ *     no-veteranos
+ *   - Si se provee club_folio manual: validar rango y que no esté en uso en roster ACTIVE no-veterano
  *   - Errores: ROSTER_FULL | NO_FOLIO_AVAILABLE | FOLIO_OUT_OF_RANGE | FOLIO_IN_USE
  *
  * Capabilities:
  *   CREATE_PLAYER | GET_PLAYER | LIST_PLAYERS_BY_CLUB | LIST_PLAYERS_BY_ORG |
- *   UPDATE_PLAYER | UPDATE_STATUS | CHANGE_CLUB
+ *   UPDATE_PLAYER | UPDATE_STATUS | CHANGE_CLUB | LIST_AVAILABLE_FOLIOS
  *
  * Checklist:
  *   [x] ¿CREATE verifica cupo antes de insertar?
@@ -42,11 +45,13 @@ import { Skill } from '../contracts/skill_contract.js';
 import { createSkillResult } from '../contracts/task_schema.js';
 import { encodeNext, decodeNext } from '../../utils/pagination.js';
 import { assertClubAccess } from './lib/club_access.js';
+import { decorateFolio, isVeteranByBirthDate } from './lib/veteran_folio.js';
 
 const CAPABILITIES = [
   'CREATE_PLAYER', 'GET_PLAYER',
   'LIST_PLAYERS_BY_CLUB', 'LIST_PLAYERS_BY_ORG',
   'UPDATE_PLAYER', 'UPDATE_STATUS', 'CHANGE_CLUB', 'UPLOAD_PHOTO',
+  'LIST_AVAILABLE_FOLIOS',
 ];
 
 export class PlayersSpecialist extends Skill {
@@ -115,6 +120,7 @@ export class PlayersSpecialist extends Skill {
         case 'UPDATE_STATUS':         return this._updateStatus(payload, db, userId);
         case 'CHANGE_CLUB':           return this._changeClub(payload, db, userId);
         case 'UPLOAD_PHOTO':          return this._uploadPhoto(payload, db);
+        case 'LIST_AVAILABLE_FOLIOS': return this._listAvailableFolios(payload, db, userId);
       }
     } catch (err) {
       return createSkillResult({
@@ -128,11 +134,11 @@ export class PlayersSpecialist extends Skill {
   // ── Helpers ──────────────────────────────────────────────────────────────
 
   /**
-   * Obtiene config del club y busca el primer folio libre entre rosters ACTIVE.
-   * Los rosters INACTIVE liberan su folio (disponible para reasignar).
-   * @returns { folioStart, folioEnd, maxPlayers, assignedFolio } o error
+   * Obtiene config del club, cupo activo y el set de folios ocupados
+   * (solo rosters ACTIVE no-veteranos — INACTIVE y veteranos liberan su folio).
+   * Compartido por _resolveClubFolio y _listAvailableFolios.
    */
-  async _resolveClubFolio(clubId, requestedFolio, db) {
+  async _getFolioState(clubId, db) {
     const { data: club, error: clubErr } = await db
       .from('lg_clubs')
       .select('id, org_id, folio_start, folio_end, max_players')
@@ -147,26 +153,42 @@ export class PlayersSpecialist extends Skill {
     const folioEnd   = club.folio_end   ?? 70;
     const maxPlayers = club.max_players ?? 70;
 
-    // Verificar cupo
     const { count: activeCount } = await db
       .from('lg_club_rosters')
       .select('id', { count: 'exact', head: true })
       .eq('club_id', clubId)
       .eq('status', 'ACTIVE');
 
-    if (activeCount >= maxPlayers) {
-      return { error: { code: 'ROSTER_FULL', message: `El club alcanzó el máximo de ${maxPlayers} jugadores activos` } };
-    }
-
-    // Folios actualmente ocupados (solo ACTIVE)
     const { data: usedRows } = await db
       .from('lg_club_rosters')
-      .select('club_folio')
+      .select('club_folio, player:lg_players!inner(birth_date)')
       .eq('club_id', clubId)
       .eq('status', 'ACTIVE')
       .not('club_folio', 'is', null);
 
-    const used = new Set((usedRows ?? []).map(r => r.club_folio));
+    const used = new Set(
+      (usedRows ?? [])
+        .filter(r => !isVeteranByBirthDate(r.player?.birth_date))
+        .map(r => r.club_folio)
+    );
+
+    return { club, folioStart, folioEnd, maxPlayers, activeCount: activeCount ?? 0, used };
+  }
+
+  /**
+   * Obtiene config del club y busca el primer folio libre entre rosters ACTIVE.
+   * Los rosters INACTIVE liberan su folio (disponible para reasignar).
+   * @returns { folioStart, folioEnd, maxPlayers, assignedFolio } o error
+   */
+  async _resolveClubFolio(clubId, requestedFolio, db) {
+    const state = await this._getFolioState(clubId, db);
+    if (state.error) return state;
+
+    const { club, folioStart, folioEnd, maxPlayers, activeCount, used } = state;
+
+    if (activeCount >= maxPlayers) {
+      return { error: { code: 'ROSTER_FULL', message: `El club alcanzó el máximo de ${maxPlayers} jugadores activos` } };
+    }
 
     let assignedFolio;
 
@@ -194,6 +216,30 @@ export class PlayersSpecialist extends Skill {
   }
 
   // ── Operations ───────────────────────────────────────────────────────────
+
+  async _listAvailableFolios({ clubId }, db, userId) {
+    const accessError = await assertClubAccess(clubId, userId, db);
+    if (accessError) {
+      return createSkillResult({ success: false, errorCode: accessError, errorMessage: 'No tienes permisos para ver los folios de este club' });
+    }
+
+    const state = await this._getFolioState(clubId, db);
+    if (state.error) {
+      return createSkillResult({ success: false, errorCode: state.error.code, errorMessage: state.error.message });
+    }
+
+    const { folioStart, folioEnd, maxPlayers, activeCount, used } = state;
+
+    const available = [];
+    for (let f = folioStart; f <= folioEnd; f++) {
+      if (!used.has(f)) available.push(f);
+    }
+
+    return createSkillResult({
+      success: true,
+      data: { available, folioStart, folioEnd, maxPlayers, activeCount },
+    });
+  }
 
   async _createPlayer(payload, db, userId) {
     const {
@@ -287,8 +333,21 @@ export class PlayersSpecialist extends Skill {
     }
 
     const activeRoster = (player.active_roster ?? []).find(r => r.status === 'ACTIVE') || null;
+    const folioInfo = decorateFolio(player.club_folio, player.birth_date);
 
-    return createSkillResult({ success: true, data: { player: { ...player, active_roster: activeRoster } } });
+    return createSkillResult({
+      success: true,
+      data: {
+        player: {
+          ...player,
+          ...folioInfo,
+          active_roster: activeRoster && {
+            ...activeRoster,
+            ...decorateFolio(activeRoster.club_folio, player.birth_date),
+          },
+        },
+      },
+    });
   }
 
   async _listByClub({ clubId, q, status = 'ACTIVE', limit = 10, next_token }, db, userId) {
@@ -320,11 +379,16 @@ export class PlayersSpecialist extends Skill {
     const { data, error, count } = await query;
     if (error) return createSkillResult({ success: false, errorCode: 'LIST_PLAYERS_FAILED', errorMessage: error.message });
 
+    const decorated = (data ?? []).map(row => ({
+      ...row,
+      ...decorateFolio(row.club_folio, row.player?.birth_date),
+    }));
+
     const total   = count ?? 0;
     const hasMore = offset + limit < total;
     const newToken = hasMore ? btoa(JSON.stringify({ offset: offset + limit, limit })) : null;
 
-    return createSkillResult({ success: true, data: { data, next_token: newToken, total_registros: total, limit } });
+    return createSkillResult({ success: true, data: { data: decorated, next_token: newToken, total_registros: total, limit } });
   }
 
   async _listByOrg({ orgId, q, status = 'ACTIVE', limit = 10, next_token }, db, userId) {
@@ -389,10 +453,13 @@ export class PlayersSpecialist extends Skill {
         ? rosterList.find(r => r.status === targetStatus) || rosterList[0]
         : rosterList.find(r => r.status === 'ACTIVE') || rosterList[0];
 
+      const effectiveFolio = rosterObj?.club_folio ?? p.club_folio ?? null;
+
       return {
         ...playerData,
         club_name: clubObj?.name || null,
-        club_folio: rosterObj?.club_folio ?? p.club_folio ?? null,
+        club_folio: effectiveFolio,
+        ...decorateFolio(effectiveFolio, playerData.birth_date),
         status: rosterObj?.status || 'ACTIVE',
       };
     });

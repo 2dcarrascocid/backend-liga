@@ -34,6 +34,24 @@ export async function assertClubAccess(clubId, userId, db) {
 }
 
 /**
+ * Verifica si `userId` es ADMIN de la organización `orgId` (no basta con
+ * ser ADMIN_CLUB de algún club de esa org). Útil cuando una regla de negocio
+ * distingue explícitamente "admin de org" de "admin de club" (ej: reglas de
+ * inscripción a torneos), a diferencia de assertClubAccess() que solo dice
+ * si hay acceso o no, sin decir por cuál de los dos motivos.
+ * @returns {Promise<boolean>}
+ */
+export async function isOrgAdmin(userId, orgId, db) {
+  if (!userId || !orgId) return false;
+
+  const { data: orgAdmin } = await db
+    .from('lg_org_users').select('role')
+    .eq('user_id', userId).eq('org_id', orgId).maybeSingle();
+
+  return orgAdmin?.role === 'ADMIN';
+}
+
+/**
  * Resuelve qué clubes puede ver/administrar `userId` dentro de `orgId`.
  * @returns {Promise<'ALL'|string[]>} 'ALL' si es ADMIN de la org, o el array
  *   de club_ids donde es ADMIN_CLUB (puede ser vacío).

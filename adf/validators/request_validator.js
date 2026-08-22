@@ -304,11 +304,49 @@ export const ValidationRules = {
       { field: 'bookingId', required: true, type: 'string', format: 'uuid' },
     ],
   },
+  seasons: {
+    CREATE_SEASON: [
+      { field: 'orgId', required: true, type: 'string', format: 'uuid' },
+      { field: 'name', required: true, type: 'string', minLength: 2, maxLength: 100 },
+      { field: 'year', required: true, type: 'number' },
+    ],
+    UPDATE_SEASON: [
+      { field: 'seasonId', required: true, type: 'string', format: 'uuid' },
+    ],
+    DELETE_SEASON: [
+      { field: 'seasonId', required: true, type: 'string', format: 'uuid' },
+    ],
+  },
+  club_finance: {
+    UPSERT_COST_CATALOG: [
+      { field: 'orgId', required: true, type: 'string', format: 'uuid' },
+      { field: 'seasonId', required: true, type: 'string', format: 'uuid' },
+    ],
+    CREATE_LEDGER_ENTRY: [
+      { field: 'orgId', required: true, type: 'string', format: 'uuid' },
+      { field: 'clubId', required: true, type: 'string', format: 'uuid' },
+      { field: 'category', required: true, type: 'string', enum: ['INSCRIPCION', 'FECHA', 'MULTA', 'OTRO', 'VALOR'] },
+      { field: 'direction', required: false, type: 'string', enum: ['INGRESO', 'EGRESO'] },
+      { field: 'amount', required: true, type: 'number' },
+    ],
+    RECORD_PAYMENT: [
+      { field: 'entryId', required: true, type: 'string', format: 'uuid' },
+      { field: 'amount', required: true, type: 'number' },
+    ],
+    GET_CLUB_PAYMENT_STATUS: [
+      { field: 'clubId', required: true, type: 'string', format: 'uuid' },
+    ],
+    GET_PAYMENT_STATS: [
+      { field: 'orgId', required: true, type: 'string', format: 'uuid' },
+    ],
+  },
   tournaments: {
     CREATE_TOURNAMENT: [
       { field: 'orgId', required: true, type: 'string', format: 'uuid' },
       { field: 'name', required: true, type: 'string', minLength: 2, maxLength: 150 },
       { field: 'format', required: true, type: 'string', enum: ['ROUND_ROBIN', 'KNOCKOUT', 'GROUPS_KNOCKOUT'] },
+      { field: 'seasonId', required: true, type: 'string', format: 'uuid' },
+      { field: 'type', required: false, type: 'string', enum: ['AMISTOSO', 'OFICIAL'] },
     ],
     UPDATE_TOURNAMENT: [
       { field: 'tournamentId', required: true, type: 'string', format: 'uuid' },
@@ -349,6 +387,12 @@ export const ValidationRules = {
       { field: 'eventType', required: true, type: 'string', enum: ['GOAL', 'OWN_GOAL', 'YELLOW_CARD', 'RED_CARD', 'WARNING'] },
     ],
     LIST_MATCHES: [
+      { field: 'tournamentId', required: true, type: 'string', format: 'uuid' },
+    ],
+    GET_TOP_SCORERS: [
+      { field: 'tournamentId', required: true, type: 'string', format: 'uuid' },
+    ],
+    GET_FAIRPLAY_RANKING: [
       { field: 'tournamentId', required: true, type: 'string', format: 'uuid' },
     ],
   },
