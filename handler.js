@@ -772,6 +772,7 @@ const ROUTES = [
       type:                  body.type,
       format:                body.format,
       status:                body.status,
+      inscriptionFee:        body.inscription_fee !== undefined ? Number(body.inscription_fee) : undefined,
       startDate:             body.start_date,
       endDate:               body.end_date,
       roundsType:            body.rounds_type,
@@ -816,6 +817,21 @@ const ROUTES = [
   route('DELETE', '/tournaments/{tournamentId}/teams/{teamId}', (pp) => ({
     type: 'UNREGISTER_TEAM', domain: 'tournaments',
     input: { tournamentId: pp.tournamentId, teamId: pp.teamId },
+  })),
+
+  route('GET', '/tournaments/{tournamentId}/clubs', (pp) => ({
+    type: 'LIST_TOURNAMENT_CLUBS', domain: 'tournaments',
+    input: { tournamentId: pp.tournamentId },
+  })),
+
+  route('POST', '/tournaments/{tournamentId}/clubs', (pp, body) => ({
+    type: 'REGISTER_CLUB', domain: 'tournaments',
+    input: { tournamentId: pp.tournamentId, clubId: body.club_id },
+  })),
+
+  route('DELETE', '/tournaments/{tournamentId}/clubs/{clubId}', (pp) => ({
+    type: 'UNREGISTER_CLUB', domain: 'tournaments',
+    input: { tournamentId: pp.tournamentId, clubId: pp.clubId },
   })),
 
   route('GET', '/tournaments/{tournamentId}/stages', (pp) => ({

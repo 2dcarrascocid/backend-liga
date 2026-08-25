@@ -59,12 +59,28 @@ export function decorateLedgerEntry(entry) {
 }
 
 /**
- * Cobro de INSCRIPCION al registrar una serie en un torneo.
- * No lanza si falla — quien la llama decide si loguear y continuar
- * (una inscripción ya confirmada no debe revertirse por un problema del libro).
+ * Cobro de INSCRIPCION al inscribir un club (o, históricamente, una serie)
+ * en un torneo. No lanza si falla — quien la llama decide si loguear y
+ * continuar (una inscripción ya confirmada no debe revertirse por un
+ * problema del libro).
+ *
+ * `seriesId` es opcional (null): el cobro de inscripción hoy se dispara a
+ * nivel de CLUB (REGISTER_CLUB en tournaments_specialist.js), una sola vez
+ * por club por torneo — no por cada serie inscrita. `lg_ledger_entries.series_id`
+ * es nullable, así que un cobro con seriesId null queda asociado solo a
+ * club_id + tournament_id.
+ *
+ * `amount` (opcional): si se pasa explícito, se usa ese valor (p.ej.
+ * lg_tournaments.inscription_fee, el costo propio del torneo). Si se omite,
+ * cae al valor histórico del catálogo por temporada (lg_season_cost_catalog),
+ * para no romper llamadas existentes.
  */
-export async function createInscriptionCharge({ orgId, clubId, seriesId, tournamentId, seasonId }, db) {
-  const catalog = await getSeasonCostCatalog(seasonId, db);
+export async function createInscriptionCharge({ orgId, clubId, seriesId = null, tournamentId, seasonId, amount }, db) {
+  let effectiveAmount = amount;
+  if (effectiveAmount === undefined || effectiveAmount === null) {
+    const catalog = await getSeasonCostCatalog(seasonId, db);
+    effectiveAmount = catalog.inscription_fee;
+  }
 
   return db
     .from('lg_ledger_entries')
@@ -75,7 +91,7 @@ export async function createInscriptionCharge({ orgId, clubId, seriesId, tournam
       tournament_id: tournamentId,
       category: 'INSCRIPCION',
       direction: 'INGRESO',
-      amount: catalog.inscription_fee,
+      amount: effectiveAmount,
       description: 'Inscripción a torneo',
       due_date: todayStr(),
     })

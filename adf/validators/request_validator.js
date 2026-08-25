@@ -348,9 +348,15 @@ export const ValidationRules = {
       { field: 'seasonId', required: true, type: 'string', format: 'uuid' },
       { field: 'categoryId', required: true, type: 'string', format: 'uuid' },
       { field: 'type', required: false, type: 'string', enum: ['AMISTOSO', 'OFICIAL'] },
+      { field: 'inscriptionFee', required: true, type: 'number', min: 0 },
     ],
     UPDATE_TOURNAMENT: [
       { field: 'tournamentId', required: true, type: 'string', format: 'uuid' },
+      // UPDATE_TOURNAMENT recibe el body crudo (snake_case) vía `...body` en
+      // handler.js, no el objeto camelCase que arma CREATE_TOURNAMENT — el
+      // nombre del campo acá debe matchear esa forma (inscription_fee, no
+      // inscriptionFee) para que la regla efectivamente aplique.
+      { field: 'inscription_fee', required: false, type: 'number', min: 0 },
     ],
     DELETE_TOURNAMENT: [
       { field: 'tournamentId', required: true, type: 'string', format: 'uuid' },
@@ -364,6 +370,17 @@ export const ValidationRules = {
     REGISTER_TEAM: [
       { field: 'tournamentId', required: true, type: 'string', format: 'uuid' },
       { field: 'seriesId', required: true, type: 'string', format: 'uuid' },
+    ],
+    LIST_TOURNAMENT_CLUBS: [
+      { field: 'tournamentId', required: true, type: 'string', format: 'uuid' },
+    ],
+    REGISTER_CLUB: [
+      { field: 'tournamentId', required: true, type: 'string', format: 'uuid' },
+      { field: 'clubId', required: true, type: 'string', format: 'uuid' },
+    ],
+    UNREGISTER_CLUB: [
+      { field: 'tournamentId', required: true, type: 'string', format: 'uuid' },
+      { field: 'clubId', required: true, type: 'string', format: 'uuid' },
     ],
     GENERATE_FIXTURE: [
       { field: 'tournamentId', required: true, type: 'string', format: 'uuid' },

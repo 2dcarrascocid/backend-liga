@@ -20,22 +20,69 @@
  *   - No gestionar gastos del organizador (arbitraje/cancha) — eso es de "tournament_costs"
  *   - No gestionar temporadas — eso es de "seasons" (SeasonsSpecialist)
  *
- * Reglas de inscripción (REGISTER_TEAM) y cobros:
+ * Autorización — CREATE_TOURNAMENT / UPDATE_TOURNAMENT / DELETE_TOURNAMENT:
+ *   - RLS de todo el schema es USING(true) (ver migraciones) — la única
+ *     barrera de autorización real es este specialist. security_validator.js
+ *     solo exige un Bearer token de ALGÚN usuario autenticado, no resuelve
+ *     rol/organización.
+ *   - Gestionar la competencia en sí (crear/editar/borrar un torneo:
+ *     formato, costo de inscripción, categoría, fechas, status) es dominio
+ *     EXCLUSIVO del ADMIN de la organización dueña del torneo — isOrgAdmin(),
+ *     nunca alcanza con ser ADMIN_CLUB. A diferencia de REGISTER_TEAM /
+ *     REGISTER_CLUB (donde un admin de club actúa sobre SU club), acá se
+ *     define la competencia para toda la organización.
+ *   - UPDATE/DELETE resuelven el org_id del torneo EXISTENTE antes de
+ *     autorizar (no confían en ningún org_id que venga en el payload).
+ *
+ * Inscripción de CLUB a un torneo (REGISTER_CLUB / UNREGISTER_CLUB /
+ * LIST_TOURNAMENT_CLUBS) — paso previo, obligatorio, a inscribir una serie:
+ *   - Un club se inscribe UNA vez por torneo (lg_tournament_clubs, gate
+ *     previo a lg_tournament_teams).
+ *   - Mismo criterio de permisos que REGISTER_TEAM (assertClubAccess),
+ *     mismo gate de status REGISTRATION y temporada activa si quien
+ *     inscribe no es admin de organización.
+ *   - El club debe pertenecer a la MISMA organización que el torneo
+ *     (club.org_id === tournament.org_id) — error CLUB_ORG_MISMATCH si no.
+ *     assertClubAccess por sí sola NO alcanza para esto: solo valida que el
+ *     usuario administre el club dentro de la org DEL CLUB, no que el club y
+ *     el torneo compartan organización (mismo chequeo agregado en
+ *     REGISTER_TEAM, que tenía el mismo hueco).
+ *   - LIST_TOURNAMENT_CLUBS expone datos financieros (inscription_charge) —
+ *     ADMIN de la organización ve todos los clubes inscritos; cualquier
+ *     otro usuario solo ve los clubes a los que tiene acceso
+ *     (getAccessibleClubIds, mismo patrón que club_finance_specialist.js).
+ *   - Al inscribir el club se genera 1 cobro INSCRIPCION en el libro
+ *     (lib/ledger.js) usando lg_tournaments.inscription_fee (costo propio
+ *     del torneo, obligatorio en CREATE_TOURNAMENT) — UNA vez por club, no
+ *     por serie. El estado pendiente/pagado se deriva de ese ledger entry
+ *     (computeEntryStatus, calculado en runtime, sin columna de estado).
+ *
+ * Reglas de inscripción de SERIE (REGISTER_TEAM):
  *   - Solo puede inscribir quien tenga acceso al club dueño de la serie
  *     (assertClubAccess): admin de organización → cualquier club; admin de
  *     club → solo el suyo
  *   - El torneo debe estar en status REGISTRATION ("torneos disponibles")
  *   - Si quien inscribe NO es admin de organización, el torneo debe
  *     pertenecer a la temporada activa (lg_seasons.active = true)
- *   - Cada inscripción exitosa genera 1 cobro INSCRIPCION en el libro
- *     (lib/ledger.js), y cada fecha generada por el fixture genera 1 cobro
- *     FECHA por cada serie ACTIVE inscrita — ver lib/ledger.js, dominio
- *     separado de "tournament_costs" (eso es gasto del organizador; esto es
- *     lo que el club le debe a la liga)
+ *   - El club dueño de la serie debe pertenecer a la MISMA organización que
+ *     el torneo (club.org_id === tournament.org_id) — error
+ *     CLUB_ORG_MISMATCH si no (ver nota de autorización arriba)
+ *   - La categoría de la serie (lg_club_series.category_id) debe coincidir
+ *     con la categoría del torneo (lg_tournaments.category_id) — si el
+ *     torneo no tiene categoría definida (NULL) se omite la validación
+ *   - El club dueño de la serie debe estar ya inscrito al torneo
+ *     (lg_tournament_clubs) — error CLUB_NOT_REGISTERED si no
+ *   - REGISTER_TEAM ya NO genera cobro propio (antes disparaba 1 cobro
+ *     INSCRIPCION por serie); ese cobro ahora es responsabilidad exclusiva
+ *     de REGISTER_CLUB, una sola vez por club. Cada fecha generada por el
+ *     fixture sigue generando 1 cobro FECHA por cada serie ACTIVE inscrita
+ *     — ver lib/ledger.js, dominio separado de "tournament_costs" (eso es
+ *     gasto del organizador; esto es lo que el club le debe a la liga)
  *
  * Capabilities:
  *   LIST_TOURNAMENTS | GET_TOURNAMENT | CREATE_TOURNAMENT | UPDATE_TOURNAMENT | DELETE_TOURNAMENT
  *   LIST_TOURNAMENT_TEAMS | REGISTER_TEAM | UNREGISTER_TEAM
+ *   LIST_TOURNAMENT_CLUBS | REGISTER_CLUB | UNREGISTER_CLUB
  *   LIST_STAGES | GENERATE_FIXTURE | GENERATE_KNOCKOUT_FROM_GROUPS | GENERATE_CONSOLATION
  *   GET_STANDINGS
  */
@@ -45,12 +92,13 @@ import { createSkillResult } from '../contracts/task_schema.js';
 import { encodeNext, decodeNext } from '../../utils/pagination.js';
 import { generateRoundRobin, generateGroups, generateKnockoutBracket } from './lib/fixture_generator.js';
 import { propagateWinner } from './lib/bracket_propagation.js';
-import { assertClubAccess, isOrgAdmin } from './lib/club_access.js';
-import { createInscriptionCharge, createMatchdayCharges, clearUnpaidMatchdayCharges } from './lib/ledger.js';
+import { assertClubAccess, isOrgAdmin, getAccessibleClubIds } from './lib/club_access.js';
+import { createInscriptionCharge, createMatchdayCharges, clearUnpaidMatchdayCharges, computeEntryStatus } from './lib/ledger.js';
 
 const CAPABILITIES = [
   'LIST_TOURNAMENTS', 'GET_TOURNAMENT', 'CREATE_TOURNAMENT', 'UPDATE_TOURNAMENT', 'DELETE_TOURNAMENT',
   'LIST_TOURNAMENT_TEAMS', 'REGISTER_TEAM', 'UNREGISTER_TEAM',
+  'LIST_TOURNAMENT_CLUBS', 'REGISTER_CLUB', 'UNREGISTER_CLUB',
   'LIST_STAGES', 'GENERATE_FIXTURE', 'GENERATE_KNOCKOUT_FROM_GROUPS', 'GENERATE_CONSOLATION',
   'GET_STANDINGS',
 ];
@@ -63,6 +111,7 @@ const TOURNAMENT_UPDATABLE_FIELDS = {
   name: 'name',
   type: 'type',
   status: 'status',
+  inscriptionFee: 'inscription_fee',
   startDate: 'start_date',
   endDate: 'end_date',
   roundsType: 'rounds_type',
@@ -124,17 +173,24 @@ export class TournamentsSpecialist extends Skill {
           'Filtrar siempre por org_id en LIST_TOURNAMENTS',
           'Usar fixture_generator.js para todo algoritmo de sorteo',
           'Usar bracket_propagation.js para avanzar ganadores/perdedores de llave',
+          'Exigir isOrgAdmin(userId, org_id) en CREATE/UPDATE/DELETE_TOURNAMENT — RLS es USING(true), la autorización real vive acá',
+          'Validar club.org_id === tournament.org_id en REGISTER_TEAM y REGISTER_CLUB',
+          'Filtrar LIST_TOURNAMENT_CLUBS por getAccessibleClubIds cuando el caller no es admin de la organización del torneo',
         ],
         dont: [
           'No gestionar logística/resultados de partidos individuales',
           'No gestionar costos',
+          'No confiar en ningún org_id del payload para autorizar UPDATE/DELETE — resolver el org_id del recurso existente',
         ],
       },
       checklist: [
-        'CREATE_TOURNAMENT valida orgId/name/format',
+        'CREATE_TOURNAMENT valida orgId/name/format/inscriptionFee (>= 0) y isOrgAdmin(userId, orgId)',
+        'UPDATE_TOURNAMENT y DELETE_TOURNAMENT resuelven el org_id del torneo existente y validan isOrgAdmin antes de aplicar el cambio',
         'GENERATE_FIXTURE no duplica fixture ya generado',
         'GENERATE_KNOCKOUT_FROM_GROUPS siembra desde vw_tournament_standings',
-        'REGISTER_TEAM valida assertClubAccess, status REGISTRATION y temporada activa (si no es admin de org)',
+        'REGISTER_CLUB valida assertClubAccess, club.org_id === tournament.org_id, status REGISTRATION y temporada activa (si no es admin de org), y genera 1 cobro INSCRIPCION por club',
+        'REGISTER_TEAM valida assertClubAccess, club.org_id === tournament.org_id, status REGISTRATION, temporada activa (si no es admin de org), categoría de la serie vs categoría del torneo, y que el club ya esté inscrito (lg_tournament_clubs)',
+        'LIST_TOURNAMENT_CLUBS filtra por clubes accesibles (getAccessibleClubIds) cuando el caller no es admin de la organización del torneo',
         'Toda generación de matchdays llama _generateMatchdayCharges sin duplicar cobros existentes',
       ],
     };
@@ -155,12 +211,15 @@ export class TournamentsSpecialist extends Skill {
       switch (operation) {
         case 'LIST_TOURNAMENTS': return this._listTournaments(payload, db);
         case 'GET_TOURNAMENT': return this._getTournament(payload, db);
-        case 'CREATE_TOURNAMENT': return this._createTournament(payload, db);
-        case 'UPDATE_TOURNAMENT': return this._updateTournament(payload, db);
-        case 'DELETE_TOURNAMENT': return this._deleteTournament(payload, db);
+        case 'CREATE_TOURNAMENT': return this._createTournament(payload, db, userId);
+        case 'UPDATE_TOURNAMENT': return this._updateTournament(payload, db, userId);
+        case 'DELETE_TOURNAMENT': return this._deleteTournament(payload, db, userId);
         case 'LIST_TOURNAMENT_TEAMS': return this._listTeams(payload, db);
         case 'REGISTER_TEAM': return this._registerTeam(payload, db, userId);
         case 'UNREGISTER_TEAM': return this._unregisterTeam(payload, db, userId);
+        case 'LIST_TOURNAMENT_CLUBS': return this._listTournamentClubs(payload, db, userId);
+        case 'REGISTER_CLUB': return this._registerClub(payload, db, userId);
+        case 'UNREGISTER_CLUB': return this._unregisterClub(payload, db, userId);
         case 'LIST_STAGES': return this._listStages(payload, db);
         case 'GENERATE_FIXTURE': return this._generateFixture(payload, db);
         case 'GENERATE_KNOCKOUT_FROM_GROUPS': return this._generateKnockoutFromGroups(payload, db);
@@ -227,13 +286,26 @@ export class TournamentsSpecialist extends Skill {
     return createSkillResult({ success: true, data: { tournament: { ...tournament, teams_count: teamsCount ?? 0 } } });
   }
 
-  async _createTournament(payload, db) {
-    const { orgId, name, format, seasonId, categoryId } = payload;
-    if (!orgId || !name || !format || !seasonId || !categoryId) {
-      return createSkillResult({ success: false, errorCode: 'MISSING_FIELDS', errorMessage: 'org_id, name, format, seasonId y categoryId son requeridos' });
+  async _createTournament(payload, db, userId) {
+    const { orgId, name, format, seasonId, categoryId, inscriptionFee } = payload;
+    if (!orgId || !name || !format || !seasonId || !categoryId || inscriptionFee === undefined || inscriptionFee === null) {
+      return createSkillResult({ success: false, errorCode: 'MISSING_FIELDS', errorMessage: 'org_id, name, format, seasonId, categoryId e inscriptionFee son requeridos' });
     }
     if (!['ROUND_ROBIN', 'KNOCKOUT', 'GROUPS_KNOCKOUT'].includes(format)) {
       return createSkillResult({ success: false, errorCode: 'INVALID_FORMAT', errorMessage: `Formato inválido: "${format}"` });
+    }
+    const inscriptionFeeNum = Number(inscriptionFee);
+    if (!Number.isFinite(inscriptionFeeNum) || inscriptionFeeNum < 0) {
+      return createSkillResult({ success: false, errorCode: 'INVALID_INSCRIPTION_FEE', errorMessage: 'inscriptionFee debe ser un número mayor o igual a 0' });
+    }
+
+    // Gestión de torneos (crear/editar/borrar) es dominio exclusivo del
+    // ADMIN de la organización dueña del torneo — no de ADMIN_CLUB. A
+    // diferencia de la inscripción (REGISTER_TEAM/REGISTER_CLUB), donde un
+    // admin de club actúa sobre SU club, acá se está definiendo la
+    // competencia en sí (formato, costo, categoría, fechas) para toda la org.
+    if (!(await isOrgAdmin(userId, orgId, db))) {
+      return createSkillResult({ success: false, errorCode: 'FORBIDDEN', errorMessage: 'Solo el administrador de la organización puede crear torneos' });
     }
 
     const type = payload.type ?? 'OFICIAL';
@@ -263,6 +335,7 @@ export class TournamentsSpecialist extends Skill {
         type,
         format,
         status: payload.status ?? 'DRAFT',
+        inscription_fee: inscriptionFeeNum,
         start_date: payload.startDate ?? null,
         end_date: payload.endDate ?? null,
         rounds_type: payload.roundsType ?? 'SINGLE',
@@ -287,7 +360,15 @@ export class TournamentsSpecialist extends Skill {
     return createSkillResult({ success: true, data: { tournament } });
   }
 
-  async _updateTournament({ tournamentId, ...updates }, db) {
+  async _updateTournament({ tournamentId, ...updates }, db, userId) {
+    const { data: existing } = await db.from('lg_tournaments').select('id, org_id').eq('id', tournamentId).maybeSingle();
+    if (!existing) {
+      return createSkillResult({ success: false, errorCode: 'TOURNAMENT_NOT_FOUND', errorMessage: 'Torneo no encontrado' });
+    }
+    if (!(await isOrgAdmin(userId, existing.org_id, db))) {
+      return createSkillResult({ success: false, errorCode: 'FORBIDDEN', errorMessage: 'Solo el administrador de la organización puede editar torneos' });
+    }
+
     const patch = {};
     for (const [key, column] of Object.entries(TOURNAMENT_UPDATABLE_FIELDS)) {
       if (updates[key] !== undefined) patch[column] = updates[key];
@@ -298,6 +379,13 @@ export class TournamentsSpecialist extends Skill {
     }
     if (patch.type !== undefined && !TOURNAMENT_TYPES.includes(patch.type)) {
       return createSkillResult({ success: false, errorCode: 'INVALID_TYPE', errorMessage: `Tipo de torneo inválido: "${patch.type}"` });
+    }
+    if (patch.inscription_fee !== undefined) {
+      const feeNum = Number(patch.inscription_fee);
+      if (!Number.isFinite(feeNum) || feeNum < 0) {
+        return createSkillResult({ success: false, errorCode: 'INVALID_INSCRIPTION_FEE', errorMessage: 'inscriptionFee debe ser un número mayor o igual a 0' });
+      }
+      patch.inscription_fee = feeNum;
     }
     patch.updated_at = new Date().toISOString();
 
@@ -310,10 +398,13 @@ export class TournamentsSpecialist extends Skill {
     return createSkillResult({ success: true, data: { tournament } });
   }
 
-  async _deleteTournament({ tournamentId }, db) {
-    const { data: existing } = await db.from('lg_tournaments').select('id').eq('id', tournamentId).maybeSingle();
+  async _deleteTournament({ tournamentId }, db, userId) {
+    const { data: existing } = await db.from('lg_tournaments').select('id, org_id').eq('id', tournamentId).maybeSingle();
     if (!existing) {
       return createSkillResult({ success: false, errorCode: 'TOURNAMENT_NOT_FOUND', errorMessage: 'Torneo no encontrado' });
+    }
+    if (!(await isOrgAdmin(userId, existing.org_id, db))) {
+      return createSkillResult({ success: false, errorCode: 'FORBIDDEN', errorMessage: 'Solo el administrador de la organización puede eliminar torneos' });
     }
     const { error } = await db.from('lg_tournaments').delete().eq('id', tournamentId);
     if (error) {
@@ -344,7 +435,7 @@ export class TournamentsSpecialist extends Skill {
     }
 
     const { data: series } = await db
-      .from('lg_club_series').select('id, club_id').eq('id', seriesId).maybeSingle();
+      .from('lg_club_series').select('id, club_id, category_id').eq('id', seriesId).maybeSingle();
     if (!series) {
       return createSkillResult({ success: false, errorCode: 'SERIES_NOT_FOUND', errorMessage: 'Serie no encontrada' });
     }
@@ -355,12 +446,37 @@ export class TournamentsSpecialist extends Skill {
     }
 
     const { data: tournament } = await db
-      .from('lg_tournaments').select('id, org_id, season_id, status').eq('id', tournamentId).maybeSingle();
+      .from('lg_tournaments').select('id, org_id, season_id, status, category_id').eq('id', tournamentId).maybeSingle();
     if (!tournament) {
       return createSkillResult({ success: false, errorCode: 'TOURNAMENT_NOT_FOUND', errorMessage: 'Torneo no encontrado' });
     }
     if (tournament.status !== 'REGISTRATION') {
       return createSkillResult({ success: false, errorCode: 'TOURNAMENT_NOT_OPEN', errorMessage: 'El torneo no está abierto a inscripciones' });
+    }
+
+    // El club dueño de la serie debe pertenecer a la MISMA organización que
+    // el torneo — assertClubAccess solo valida que el usuario administre el
+    // club (en su propia org), no que el club y el torneo compartan
+    // organización. Sin este chequeo, un ADMIN_CLUB de la Org A podría
+    // inscribir su serie en un torneo de la Org B.
+    const { data: seriesClub } = await db.from('lg_clubs').select('org_id').eq('id', series.club_id).maybeSingle();
+    if (!seriesClub || seriesClub.org_id !== tournament.org_id) {
+      return createSkillResult({ success: false, errorCode: 'CLUB_ORG_MISMATCH', errorMessage: 'El club no pertenece a la organización dueña del torneo' });
+    }
+
+    // Si el torneo tiene categoría definida, la serie debe pertenecer a esa
+    // misma categoría. Si el torneo no tiene categoría (NULL), se omite la
+    // validación — un torneo sin categoría definida acepta series de cualquiera.
+    if (tournament.category_id && series.category_id !== tournament.category_id) {
+      return createSkillResult({ success: false, errorCode: 'CATEGORY_MISMATCH', errorMessage: 'La categoría de la serie no coincide con la categoría del torneo' });
+    }
+
+    // El club dueño de la serie debe estar ya inscrito al torneo (gate previo,
+    // ver REGISTER_CLUB) antes de poder agregar cualquiera de sus series.
+    const { data: clubRegistration } = await db
+      .from('lg_tournament_clubs').select('id').eq('tournament_id', tournamentId).eq('club_id', series.club_id).maybeSingle();
+    if (!clubRegistration) {
+      return createSkillResult({ success: false, errorCode: 'CLUB_NOT_REGISTERED', errorMessage: 'El club debe inscribirse al torneo antes de agregar equipos' });
     }
 
     // Admin de club (no de organización): solo puede inscribir a torneos de la temporada activa.
@@ -392,17 +508,8 @@ export class TournamentsSpecialist extends Skill {
       return createSkillResult({ success: false, errorCode: 'REGISTER_TEAM_FAILED', errorMessage: error.message });
     }
 
-    const chargeResult = await createInscriptionCharge({
-      orgId: tournament.org_id,
-      clubId: series.club_id,
-      seriesId,
-      tournamentId,
-      seasonId: tournament.season_id,
-    }, db);
-    if (chargeResult.error) {
-      // La inscripción ya quedó registrada — un problema del libro no debe revertirla.
-      console.error('[tournaments] createInscriptionCharge failed:', chargeResult.error.message);
-    }
+    // El cobro INSCRIPCION ya no se genera aquí: se dispara UNA vez por club
+    // al inscribirse (REGISTER_CLUB), no por cada serie del club.
 
     return createSkillResult({ success: true, data: { team } });
   }
@@ -429,6 +536,190 @@ export class TournamentsSpecialist extends Skill {
       return createSkillResult({ success: false, errorCode: 'UNREGISTER_TEAM_FAILED', errorMessage: error.message });
     }
     return createSkillResult({ success: true, data: { deleted: true, teamId } });
+  }
+
+  // ── Clubes inscritos (gate previo a las series/equipos) ─────────────────────
+
+  /**
+   * Lista los clubes inscritos en un torneo, decorados con el estado de su
+   * cobro INSCRIPCION (PENDIENTE/PARCIAL/PAGADO/VENCIDO — computeEntryStatus,
+   * calculado en runtime desde lg_ledger_entries, sin columna de estado
+   * propia en lg_tournament_clubs) para que el frontend arme el listado de
+   * "clubes ya inscritos, disponibles para agregar equipo".
+   */
+  async _listTournamentClubs({ tournamentId }, db, userId) {
+    if (!tournamentId) {
+      return createSkillResult({ success: false, errorCode: 'MISSING_FIELDS', errorMessage: 'tournamentId es requerido' });
+    }
+
+    const { data: tournament } = await db.from('lg_tournaments').select('id, org_id').eq('id', tournamentId).maybeSingle();
+    if (!tournament) {
+      return createSkillResult({ success: false, errorCode: 'TOURNAMENT_NOT_FOUND', errorMessage: 'Torneo no encontrado' });
+    }
+
+    // Expone montos adeudados/pagados por club (inscription_charge) — datos
+    // financieros. Un ADMIN de la organización ve todos los clubes inscritos;
+    // cualquier otro usuario (ADMIN_CLUB u otro) solo ve los clubes a los
+    // que tiene acceso (mismo patrón que club_finance_specialist.js con
+    // assertClubAccess/getAccessibleClubIds).
+    let accessibleClubIds = null; // null = sin restricción (admin de org)
+    if (!(await isOrgAdmin(userId, tournament.org_id, db))) {
+      const clubIds = await getAccessibleClubIds(userId, tournament.org_id, db);
+      accessibleClubIds = clubIds === 'ALL' ? null : clubIds;
+      if (Array.isArray(accessibleClubIds) && accessibleClubIds.length === 0) {
+        return createSkillResult({ success: true, data: { clubs: [] } });
+      }
+    }
+
+    let query = db
+      .from('lg_tournament_clubs')
+      .select('*, club:lg_clubs(id,name,short_name,logo_url)')
+      .eq('tournament_id', tournamentId)
+      .order('created_at', { ascending: true });
+    if (Array.isArray(accessibleClubIds)) query = query.in('club_id', accessibleClubIds);
+
+    const { data: clubs, error } = await query;
+    if (error) {
+      return createSkillResult({ success: false, errorCode: 'LIST_TOURNAMENT_CLUBS_FAILED', errorMessage: error.message });
+    }
+
+    const { data: ledgerEntries } = await db
+      .from('lg_ledger_entries')
+      .select('id, club_id, amount, paid_amount, due_date')
+      .eq('tournament_id', tournamentId)
+      .eq('category', 'INSCRIPCION')
+      .is('series_id', null);
+    const entryByClubId = new Map((ledgerEntries ?? []).map((e) => [e.club_id, e]));
+
+    const decorated = (clubs ?? []).map((c) => {
+      const entry = entryByClubId.get(c.club_id) ?? null;
+      return {
+        ...c,
+        inscription_charge: entry,
+        inscription_status: entry ? computeEntryStatus(entry) : 'SIN_COBRO',
+      };
+    });
+
+    return createSkillResult({ success: true, data: { clubs: decorated } });
+  }
+
+  async _registerClub({ tournamentId, clubId }, db, userId) {
+    if (!tournamentId || !clubId) {
+      return createSkillResult({ success: false, errorCode: 'MISSING_FIELDS', errorMessage: 'tournamentId y clubId son requeridos' });
+    }
+
+    const accessError = await assertClubAccess(clubId, userId, db);
+    if (accessError) {
+      return createSkillResult({ success: false, errorCode: accessError, errorMessage: 'No tienes permisos para inscribir este club' });
+    }
+
+    const { data: tournament } = await db
+      .from('lg_tournaments').select('id, org_id, season_id, status, inscription_fee').eq('id', tournamentId).maybeSingle();
+    if (!tournament) {
+      return createSkillResult({ success: false, errorCode: 'TOURNAMENT_NOT_FOUND', errorMessage: 'Torneo no encontrado' });
+    }
+    if (tournament.status !== 'REGISTRATION') {
+      return createSkillResult({ success: false, errorCode: 'TOURNAMENT_NOT_OPEN', errorMessage: 'El torneo no está abierto a inscripciones' });
+    }
+
+    // El club debe pertenecer a la MISMA organización que el torneo —
+    // assertClubAccess solo valida que el usuario administre el club (en su
+    // propia org), no que el club y el torneo compartan organización. Sin
+    // este chequeo, un ADMIN_CLUB de la Org A podría inscribir (y generar
+    // un cobro INSCRIPCION) en un torneo de la Org B.
+    const { data: club } = await db.from('lg_clubs').select('org_id').eq('id', clubId).maybeSingle();
+    if (!club || club.org_id !== tournament.org_id) {
+      return createSkillResult({ success: false, errorCode: 'CLUB_ORG_MISMATCH', errorMessage: 'El club no pertenece a la organización dueña del torneo' });
+    }
+
+    // Admin de club (no de organización): solo puede inscribir a torneos de la temporada activa.
+    const callerIsOrgAdmin = await isOrgAdmin(userId, tournament.org_id, db);
+    if (!callerIsOrgAdmin) {
+      const { data: season } = tournament.season_id
+        ? await db.from('lg_seasons').select('active').eq('id', tournament.season_id).maybeSingle()
+        : { data: null };
+      if (!season?.active) {
+        return createSkillResult({ success: false, errorCode: 'SEASON_NOT_ACTIVE', errorMessage: 'Solo se puede inscribir a torneos de la temporada activa' });
+      }
+    }
+
+    const { data: tournamentClub, error } = await db
+      .from('lg_tournament_clubs')
+      .insert({ tournament_id: tournamentId, club_id: clubId, registered_by: userId ?? null })
+      .select('*, club:lg_clubs(id,name,short_name,logo_url)')
+      .single();
+
+    if (error) {
+      if (error.code === '23505') {
+        return createSkillResult({ success: false, errorCode: 'DUPLICATE_CLUB_REGISTRATION', errorMessage: 'Este club ya está inscrito en este torneo' });
+      }
+      return createSkillResult({ success: false, errorCode: 'REGISTER_CLUB_FAILED', errorMessage: error.message });
+    }
+
+    // Cobro INSCRIPCION, una sola vez por club (no por serie) — usa el costo
+    // propio del torneo (lg_tournaments.inscription_fee), no el catálogo por
+    // temporada. seriesId va null: este cobro es a nivel de club, no de serie.
+    const chargeResult = await createInscriptionCharge({
+      orgId: tournament.org_id,
+      clubId,
+      seriesId: null,
+      tournamentId,
+      seasonId: tournament.season_id,
+      amount: tournament.inscription_fee,
+    }, db);
+    if (chargeResult.error) {
+      // La inscripción ya quedó registrada — un problema del libro no debe revertirla.
+      console.error('[tournaments] createInscriptionCharge failed:', chargeResult.error.message);
+    }
+
+    return createSkillResult({ success: true, data: { tournamentClub } });
+  }
+
+  async _unregisterClub({ tournamentId, clubId }, db, userId) {
+    if (!tournamentId || !clubId) {
+      return createSkillResult({ success: false, errorCode: 'MISSING_FIELDS', errorMessage: 'tournamentId y clubId son requeridos' });
+    }
+
+    const accessError = await assertClubAccess(clubId, userId, db);
+    if (accessError) {
+      return createSkillResult({ success: false, errorCode: accessError, errorMessage: 'No tienes permisos para retirar este club' });
+    }
+
+    const { data: existing } = await db
+      .from('lg_tournament_clubs').select('id').eq('tournament_id', tournamentId).eq('club_id', clubId).maybeSingle();
+    if (!existing) {
+      return createSkillResult({ success: false, errorCode: 'CLUB_NOT_REGISTERED', errorMessage: 'Este club no está inscrito en este torneo' });
+    }
+
+    // Decisión de diseño: no se permite retirar un club del torneo si ya
+    // tiene series/equipos inscritos (lg_tournament_teams) — primero hay que
+    // retirar (UNREGISTER_TEAM) cada serie de ese club, igual que un club no
+    // puede eliminarse mientras tenga series activas en otros dominios.
+    // Evita dejar equipos "huérfanos" (con fixture/resultados ya generados)
+    // sin su club inscrito.
+    const { data: clubSeries } = await db.from('lg_club_series').select('id').eq('club_id', clubId);
+    const seriesIds = (clubSeries ?? []).map((s) => s.id);
+    if (seriesIds.length > 0) {
+      const { count: teamsCount } = await db
+        .from('lg_tournament_teams')
+        .select('id', { count: 'exact', head: true })
+        .eq('tournament_id', tournamentId)
+        .in('series_id', seriesIds);
+      if (teamsCount > 0) {
+        return createSkillResult({
+          success: false,
+          errorCode: 'CLUB_HAS_REGISTERED_TEAMS',
+          errorMessage: 'El club tiene series/equipos inscritos en este torneo. Retire primero las series antes de retirar el club.',
+        });
+      }
+    }
+
+    const { error } = await db
+      .from('lg_tournament_clubs').delete().eq('tournament_id', tournamentId).eq('club_id', clubId);
+    if (error) {
+      return createSkillResult({ success: false, errorCode: 'UNREGISTER_CLUB_FAILED', errorMessage: error.message });
+    }
+    return createSkillResult({ success: true, data: { deleted: true, tournamentId, clubId } });
   }
 
   // ── Fases ────────────────────────────────────────────────────────────────
