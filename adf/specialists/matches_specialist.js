@@ -19,6 +19,7 @@
  *   LIST_MATCHDAYS | CREATE_MATCHDAY
  *   LIST_MATCHES | GET_MATCH | UPDATE_MATCH_LOGISTICS | UPDATE_MATCH_RESULT
  *   LIST_MATCH_EVENTS | ADD_MATCH_EVENT | DELETE_MATCH_EVENT
+ *   GET_TOP_SCORERS | GET_FAIRPLAY_RANKING
  */
 
 import { Skill } from '../contracts/skill_contract.js';
@@ -29,6 +30,7 @@ const CAPABILITIES = [
   'LIST_MATCHDAYS', 'CREATE_MATCHDAY',
   'LIST_MATCHES', 'GET_MATCH', 'UPDATE_MATCH_LOGISTICS', 'UPDATE_MATCH_RESULT',
   'LIST_MATCH_EVENTS', 'ADD_MATCH_EVENT', 'DELETE_MATCH_EVENT',
+  'GET_TOP_SCORERS', 'GET_FAIRPLAY_RANKING',
 ];
 
 const MATCH_SELECT = `
@@ -94,6 +96,8 @@ export class MatchesSpecialist extends Skill {
         case 'LIST_MATCH_EVENTS': return this._listEvents(payload, db);
         case 'ADD_MATCH_EVENT': return this._addEvent(payload, db);
         case 'DELETE_MATCH_EVENT': return this._deleteEvent(payload, db);
+        case 'GET_TOP_SCORERS': return this._getTopScorers(payload, db);
+        case 'GET_FAIRPLAY_RANKING': return this._getFairplayRanking(payload, db);
       }
     } catch (err) {
       return createSkillResult({ success: false, errorCode: 'MATCHES_SPECIALIST_ERROR', errorMessage: err.message });
@@ -282,5 +286,108 @@ export class MatchesSpecialist extends Skill {
     const { error } = await db.from('lg_match_events').delete().eq('id', eventId).eq('match_id', matchId);
     if (error) return createSkillResult({ success: false, errorCode: 'DELETE_EVENT_FAILED', errorMessage: error.message });
     return createSkillResult({ success: true, data: { deleted: true, eventId } });
+  }
+
+  // ── Estadísticas de torneo (goleadores, fairplay) ───────────────────────
+
+  async _getTopScorers({ tournamentId, limit = 50 }, db) {
+    if (!tournamentId) {
+      return createSkillResult({ success: false, errorCode: 'MISSING_FIELDS', errorMessage: 'tournamentId es requerido' });
+    }
+
+    const { data: matches, error: matchesErr } = await db.from('lg_matches').select('id').eq('tournament_id', tournamentId);
+    if (matchesErr) return createSkillResult({ success: false, errorCode: 'TOP_SCORERS_FAILED', errorMessage: matchesErr.message });
+    const matchIds = (matches || []).map((m) => m.id);
+    if (matchIds.length === 0) return createSkillResult({ success: true, data: { scorers: [] } });
+
+    const { data: events, error } = await db
+      .from('lg_match_events')
+      .select('player_id, series_id, player:lg_players(id,first_name,last_name,photo_url), series:lg_club_series(id,name,club:lg_clubs(id,name,short_name))')
+      .eq('event_type', 'GOAL')
+      .in('match_id', matchIds)
+      .not('player_id', 'is', null);
+    if (error) return createSkillResult({ success: false, errorCode: 'TOP_SCORERS_FAILED', errorMessage: error.message });
+
+    const byPlayer = {};
+    for (const e of events || []) {
+      if (!byPlayer[e.player_id]) {
+        byPlayer[e.player_id] = {
+          player_id: e.player_id,
+          player_name: e.player ? `${e.player.first_name} ${e.player.last_name}` : 'Jugador',
+          photo_url: e.player?.photo_url || null,
+          series_id: e.series_id,
+          series_name: e.series?.name || null,
+          club_name: e.series?.club?.name || null,
+          goals: 0,
+        };
+      }
+      byPlayer[e.player_id].goals++;
+    }
+
+    const scorers = Object.values(byPlayer)
+      .sort((a, b) => b.goals - a.goals)
+      .slice(0, limit)
+      .map((row, i) => ({ ...row, position: i + 1 }));
+
+    return createSkillResult({ success: true, data: { scorers } });
+  }
+
+  async _getFairplayRanking({ tournamentId }, db) {
+    if (!tournamentId) {
+      return createSkillResult({ success: false, errorCode: 'MISSING_FIELDS', errorMessage: 'tournamentId es requerido' });
+    }
+
+    const { data: matches, error: matchesErr } = await db.from('lg_matches').select('id').eq('tournament_id', tournamentId);
+    if (matchesErr) return createSkillResult({ success: false, errorCode: 'FAIRPLAY_FAILED', errorMessage: matchesErr.message });
+    const matchIds = (matches || []).map((m) => m.id);
+
+    const bySeries = {};
+
+    // Parte de los equipos inscritos (0 sanciones) — igual que en la tabla
+    // de posiciones, para que se vea el ranking completo desde el inicio.
+    const { data: teams } = await db
+      .from('lg_tournament_teams')
+      .select('series_id, series:lg_club_series(id,name,club:lg_clubs(id,name,short_name))')
+      .eq('tournament_id', tournamentId);
+    for (const t of teams || []) {
+      bySeries[t.series_id] = {
+        series_id: t.series_id,
+        series_name: t.series?.name || null,
+        club_name: t.series?.club?.name || null,
+        yellow_cards: 0, red_cards: 0, warnings: 0, total: 0,
+      };
+    }
+
+    if (matchIds.length > 0) {
+      const { data: events, error } = await db
+        .from('lg_match_events')
+        .select('series_id, event_type, series:lg_club_series(id,name,club:lg_clubs(id,name,short_name))')
+        .in('match_id', matchIds)
+        .in('event_type', ['YELLOW_CARD', 'RED_CARD', 'WARNING']);
+      if (error) return createSkillResult({ success: false, errorCode: 'FAIRPLAY_FAILED', errorMessage: error.message });
+
+      for (const e of events || []) {
+        if (!bySeries[e.series_id]) {
+          bySeries[e.series_id] = {
+            series_id: e.series_id,
+            series_name: e.series?.name || null,
+            club_name: e.series?.club?.name || null,
+            yellow_cards: 0, red_cards: 0, warnings: 0, total: 0,
+          };
+        }
+        const row = bySeries[e.series_id];
+        if (e.event_type === 'YELLOW_CARD') row.yellow_cards++;
+        else if (e.event_type === 'RED_CARD') row.red_cards++;
+        else if (e.event_type === 'WARNING') row.warnings++;
+        row.total++;
+      }
+    }
+
+    // Mejor fairplay primero: menos sanciones totales; a igualdad, menos rojas, luego menos amarillas.
+    const ranking = Object.values(bySeries)
+      .sort((a, b) => a.total - b.total || a.red_cards - b.red_cards || a.yellow_cards - b.yellow_cards)
+      .map((row, i) => ({ ...row, position: i + 1 }));
+
+    return createSkillResult({ success: true, data: { ranking } });
   }
 }

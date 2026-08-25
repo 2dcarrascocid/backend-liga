@@ -380,6 +380,11 @@ const ROUTES = [
 
   // ── Categorías ────────────────────────────────────────────────────────────
 
+  route('GET', '/sports', () => ({
+    type: 'LIST_SPORTS', domain: 'categories',
+    input: {},
+  })),
+
   route('GET', '/clubs/{clubId}/categories', (pp) => ({
     type: 'LIST_CATEGORIES', domain: 'categories',
     input: { clubId: pp.clubId },
@@ -394,6 +399,9 @@ const ROUTES = [
       ageFrom:     body.age_from,
       ageTo:       body.age_to,
       description: body.description,
+      sportId:     body.sport_id,
+      gender:      body.gender,
+      serie:       body.serie,
     },
   })),
 
@@ -405,6 +413,48 @@ const ROUTES = [
   route('DELETE', '/clubs/{clubId}/categories/{categoryId}', (pp) => ({
     type: 'DELETE_CATEGORY', domain: 'categories',
     input: { clubId: pp.clubId, categoryId: pp.categoryId },
+  })),
+
+  // ── Categorías (mantenedor a nivel de organización, Parámetros) ────────────
+
+  route('GET', '/orgs/{orgId}/categories', (pp) => ({
+    type: 'LIST_CATEGORIES', domain: 'categories',
+    input: { orgId: pp.orgId },
+  })),
+
+  route('POST', '/orgs/{orgId}/categories', (pp, body) => ({
+    type: 'CREATE_CATEGORY', domain: 'categories',
+    input: {
+      orgId:       pp.orgId,
+      name:        body.name,
+      color:       body.color,
+      ageFrom:     body.age_from,
+      ageTo:       body.age_to,
+      description: body.description,
+      sportId:     body.sport_id,
+      gender:      body.gender,
+      serie:       body.serie,
+    },
+  })),
+
+  route('PATCH', '/categories/{categoryId}', (pp, body) => ({
+    type: 'UPDATE_CATEGORY', domain: 'categories',
+    input: {
+      categoryId:  pp.categoryId,
+      name:        body.name,
+      color:       body.color,
+      ageFrom:     body.age_from,
+      ageTo:       body.age_to,
+      description: body.description,
+      sportId:     body.sport_id,
+      gender:      body.gender,
+      serie:       body.serie,
+    },
+  })),
+
+  route('DELETE', '/categories/{categoryId}', (pp, _body, qs) => ({
+    type: 'DELETE_CATEGORY', domain: 'categories',
+    input: { categoryId: pp.categoryId, orgId: qs.org_id },
   })),
 
   // ── Traspasos y KPIs ───────────────────────────────────────────────────────

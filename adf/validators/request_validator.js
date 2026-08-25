@@ -346,6 +346,7 @@ export const ValidationRules = {
       { field: 'name', required: true, type: 'string', minLength: 2, maxLength: 150 },
       { field: 'format', required: true, type: 'string', enum: ['ROUND_ROBIN', 'KNOCKOUT', 'GROUPS_KNOCKOUT'] },
       { field: 'seasonId', required: true, type: 'string', format: 'uuid' },
+      { field: 'categoryId', required: true, type: 'string', format: 'uuid' },
       { field: 'type', required: false, type: 'string', enum: ['AMISTOSO', 'OFICIAL'] },
     ],
     UPDATE_TOURNAMENT: [

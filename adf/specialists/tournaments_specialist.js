@@ -194,7 +194,7 @@ export class TournamentsSpecialist extends Skill {
       effectiveLimit = decoded.limit;
     }
 
-    let query = db.from('lg_tournaments').select('*, season:lg_seasons(id,name,year)', { count: 'exact' }).eq('org_id', orgId);
+    let query = db.from('lg_tournaments').select('*, season:lg_seasons(id,name,year), category:lg_categories(id,name,serie,gender,age_from,age_to)', { count: 'exact' }).eq('org_id', orgId);
     if (status) query = query.eq('status', status);
     if (categoryId) query = query.eq('category_id', categoryId);
     if (seasonId) query = query.eq('season_id', seasonId);
@@ -215,7 +215,7 @@ export class TournamentsSpecialist extends Skill {
 
   async _getTournament({ tournamentId }, db) {
     const { data: tournament, error } = await db
-      .from('lg_tournaments').select('*, season:lg_seasons(id,name,year)').eq('id', tournamentId).maybeSingle();
+      .from('lg_tournaments').select('*, season:lg_seasons(id,name,year), category:lg_categories(id,name,serie,gender,age_from,age_to)').eq('id', tournamentId).maybeSingle();
 
     if (error || !tournament) {
       return createSkillResult({ success: false, errorCode: 'TOURNAMENT_NOT_FOUND', errorMessage: 'Torneo no encontrado' });
@@ -228,9 +228,9 @@ export class TournamentsSpecialist extends Skill {
   }
 
   async _createTournament(payload, db) {
-    const { orgId, name, format, seasonId } = payload;
-    if (!orgId || !name || !format || !seasonId) {
-      return createSkillResult({ success: false, errorCode: 'MISSING_FIELDS', errorMessage: 'org_id, name, format y seasonId son requeridos' });
+    const { orgId, name, format, seasonId, categoryId } = payload;
+    if (!orgId || !name || !format || !seasonId || !categoryId) {
+      return createSkillResult({ success: false, errorCode: 'MISSING_FIELDS', errorMessage: 'org_id, name, format, seasonId y categoryId son requeridos' });
     }
     if (!['ROUND_ROBIN', 'KNOCKOUT', 'GROUPS_KNOCKOUT'].includes(format)) {
       return createSkillResult({ success: false, errorCode: 'INVALID_FORMAT', errorMessage: `Formato inválido: "${format}"` });
@@ -247,11 +247,17 @@ export class TournamentsSpecialist extends Skill {
       return createSkillResult({ success: false, errorCode: 'SEASON_NOT_FOUND', errorMessage: 'La temporada indicada no existe en esta organización' });
     }
 
+    const { data: category } = await db
+      .from('lg_categories').select('id').eq('id', categoryId).eq('org_id', orgId).maybeSingle();
+    if (!category) {
+      return createSkillResult({ success: false, errorCode: 'CATEGORY_NOT_FOUND', errorMessage: 'La categoría indicada no existe en esta organización' });
+    }
+
     const { data: tournament, error } = await db
       .from('lg_tournaments')
       .insert({
         org_id: orgId,
-        category_id: payload.categoryId ?? null,
+        category_id: categoryId,
         season_id: seasonId,
         name,
         type,
