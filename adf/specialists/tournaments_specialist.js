@@ -269,7 +269,29 @@ export class TournamentsSpecialist extends Skill {
     const hasMore = offset + effectiveLimit < total;
     const next = hasMore ? encodeNext(offset + effectiveLimit, effectiveLimit, { orgId }) : null;
 
-    return createSkillResult({ success: true, data: { tournaments, nextToken: next, total } });
+    // clubs_count por torneo: una sola query sobre lg_tournament_clubs para
+    // TODOS los tournament_id de la página actual (evita N+1), agregando los
+    // conteos en memoria con un Map.
+    const tournamentIds = (tournaments ?? []).map((t) => t.id);
+    let clubsCountByTournamentId = new Map();
+    if (tournamentIds.length > 0) {
+      const { data: clubRows, error: clubsError } = await db
+        .from('lg_tournament_clubs').select('tournament_id').in('tournament_id', tournamentIds);
+      if (clubsError) {
+        return createSkillResult({ success: false, errorCode: 'LIST_TOURNAMENTS_FAILED', errorMessage: clubsError.message });
+      }
+      clubsCountByTournamentId = (clubRows ?? []).reduce((map, row) => {
+        map.set(row.tournament_id, (map.get(row.tournament_id) ?? 0) + 1);
+        return map;
+      }, new Map());
+    }
+
+    const decoratedTournaments = (tournaments ?? []).map((t) => ({
+      ...t,
+      clubs_count: clubsCountByTournamentId.get(t.id) ?? 0,
+    }));
+
+    return createSkillResult({ success: true, data: { tournaments: decoratedTournaments, nextToken: next, total } });
   }
 
   async _getTournament({ tournamentId }, db) {
@@ -283,7 +305,10 @@ export class TournamentsSpecialist extends Skill {
     const { count: teamsCount } = await db
       .from('lg_tournament_teams').select('id', { count: 'exact', head: true }).eq('tournament_id', tournamentId);
 
-    return createSkillResult({ success: true, data: { tournament: { ...tournament, teams_count: teamsCount ?? 0 } } });
+    const { count: clubsCount } = await db
+      .from('lg_tournament_clubs').select('id', { count: 'exact', head: true }).eq('tournament_id', tournamentId);
+
+    return createSkillResult({ success: true, data: { tournament: { ...tournament, teams_count: teamsCount ?? 0, clubs_count: clubsCount ?? 0 } } });
   }
 
   async _createTournament(payload, db, userId) {

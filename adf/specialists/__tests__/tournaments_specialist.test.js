@@ -65,6 +65,36 @@ test('CREATE_TOURNAMENT acepta inscriptionFee = 0, valida isOrgAdmin y lo persis
   assert.equal(insertedRow.inscription_fee, 0);
 });
 
+// ── LIST_TOURNAMENTS: clubs_count agregado sin N+1 ──────────────────────────
+
+test('LIST_TOURNAMENTS agrega clubs_count por torneo (con y sin clubes inscritos), en una sola query', async () => {
+  const db = createMockDb({
+    lg_tournaments: [{
+      data: [
+        { id: 't-1', org_id: 'org-1', name: 'Con clubes' },
+        { id: 't-2', org_id: 'org-1', name: 'Sin clubes' },
+      ],
+      error: null,
+      count: 2,
+    }],
+    lg_tournament_clubs: [{
+      data: [
+        { tournament_id: 't-1' },
+        { tournament_id: 't-1' },
+        { tournament_id: 't-1' },
+      ],
+      error: null,
+    }],
+  });
+
+  const result = await run('LIST_TOURNAMENTS', { orgId: 'org-1' }, db);
+
+  assert.equal(result.success, true);
+  const byId = Object.fromEntries(result.data.tournaments.map((t) => [t.id, t]));
+  assert.equal(byId['t-1'].clubs_count, 3);
+  assert.equal(byId['t-2'].clubs_count, 0);
+});
+
 // ── UPDATE_TOURNAMENT / DELETE_TOURNAMENT: autorización cross-org ──────────
 
 test('UPDATE_TOURNAMENT rechaza a un usuario que no es ADMIN de la organización DUEÑA del torneo (bypass cross-org)', async () => {
