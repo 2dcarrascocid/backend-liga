@@ -555,6 +555,20 @@ export class TournamentsSpecialist extends Skill {
       }
     }
 
+    // Una vez generado el fixture (torneo fuera de REGISTRATION) no se puede
+    // quitar una serie ya inscrita — dejaría el fixture con partidos de una
+    // serie que ya no está inscrita. Mismo error code que usa REGISTER_TEAM
+    // para el caso simétrico (agregar series fuera de inscripción).
+    const { data: tournament } = await db
+      .from('lg_tournaments').select('id, status').eq('id', tournamentId).maybeSingle();
+    if (tournament && tournament.status !== 'REGISTRATION') {
+      return createSkillResult({
+        success: false,
+        errorCode: 'TOURNAMENT_NOT_OPEN',
+        errorMessage: 'No se pueden quitar series de un torneo que ya no está en período de inscripción (el fixture ya fue generado o el torneo cambió de estado)',
+      });
+    }
+
     const { error } = await db
       .from('lg_tournament_teams').delete().eq('id', teamId).eq('tournament_id', tournamentId);
     if (error) {

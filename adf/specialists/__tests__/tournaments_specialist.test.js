@@ -404,6 +404,43 @@ test('UNREGISTER_CLUB rechaza si el usuario no tiene acceso al club (FORBIDDEN)'
   assert.equal(result.error.code, 'FORBIDDEN');
 });
 
+// ── UNREGISTER_TEAM: no se puede quitar una serie fuera de REGISTRATION ────
+
+test('UNREGISTER_TEAM rechaza con TOURNAMENT_NOT_OPEN cuando el torneo ya está IN_PROGRESS (fixture generado)', async () => {
+  const db = createMockDb({
+    lg_tournament_teams: [{ data: { series_id: 'series-1' }, error: null }], // existingTeam
+    lg_club_series: [{ data: { club_id: 'club-1' }, error: null }],
+    lg_clubs: [{ data: { org_id: 'org-1' }, error: null }], // assertClubAccess
+    lg_org_users: [{ data: { role: 'ADMIN' }, error: null }],
+    lg_club_users: [{ data: null, error: null }],
+    lg_tournaments: [{ data: { id: 't-1', status: 'IN_PROGRESS' }, error: null }],
+  });
+
+  const result = await run('UNREGISTER_TEAM', { tournamentId: 't-1', teamId: 'team-1' }, db, 'admin-user');
+
+  assert.equal(result.success, false);
+  assert.equal(result.error.code, 'TOURNAMENT_NOT_OPEN');
+});
+
+test('UNREGISTER_TEAM sigue funcionando normalmente cuando el torneo está en REGISTRATION', async () => {
+  const db = createMockDb({
+    lg_tournament_teams: [
+      { data: { series_id: 'series-1' }, error: null }, // existingTeam
+      { data: null, error: null }, // delete
+    ],
+    lg_club_series: [{ data: { club_id: 'club-1' }, error: null }],
+    lg_clubs: [{ data: { org_id: 'org-1' }, error: null }],
+    lg_org_users: [{ data: { role: 'ADMIN' }, error: null }],
+    lg_club_users: [{ data: null, error: null }],
+    lg_tournaments: [{ data: { id: 't-1', status: 'REGISTRATION' }, error: null }],
+  });
+
+  const result = await run('UNREGISTER_TEAM', { tournamentId: 't-1', teamId: 'team-1' }, db, 'admin-user');
+
+  assert.equal(result.success, true);
+  assert.deepEqual(result.data, { deleted: true, teamId: 'team-1' });
+});
+
 // ── LIST_TOURNAMENT_CLUBS: no debe filtrar datos financieros cross-tenant ──
 
 test('LIST_TOURNAMENT_CLUBS responde TOURNAMENT_NOT_FOUND si el torneo no existe', async () => {
